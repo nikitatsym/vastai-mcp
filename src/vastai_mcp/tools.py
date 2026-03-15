@@ -144,9 +144,14 @@ vastai_delete = Group(
 
 @_op(ROOT)
 def vastai_version():
-    """Get the Vast.ai MCP server version."""
+    """Get the Vast.ai MCP server version and service status."""
     from importlib.metadata import version
-    return version("vastai-mcp")
+    try:
+        _get_client().get("/api/v0/users/current/")
+        service = {"status": "ok"}
+    except Exception:
+        service = {"status": "error"}
+    return {"mcp": version("vastai-mcp"), "service": service}
 
 
 # ── vastai_read ───────────────────────────────────────────────────────
