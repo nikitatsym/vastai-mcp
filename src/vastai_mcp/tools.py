@@ -749,11 +749,26 @@ def cloud_copy(
 
 @_op(vastai_execute)
 def route_request(endpoint: str, cost: float | None = None):
-    """Route a request to a serverless endpoint."""
+    """Route a request to a serverless endpoint. Returns worker URL if available."""
+    import httpx as _httpx
+
+    from .config import get_settings
+
     body: dict = {"endpoint": endpoint}
     if cost is not None:
         body["cost"] = cost
-    return _ok(_get_client().post("/route/", json=body))
+    s = get_settings()
+    r = _httpx.post(
+        "https://run.vast.ai/route/",
+        headers={"Authorization": f"Bearer {s.vastai_api_key}"},
+        json=body,
+        timeout=30.0,
+    )
+    if r.status_code >= 400:
+        raise ValueError(f"Route failed: {r.status_code} {r.text}")
+    if not r.content:
+        return {"status": "no_workers", "detail": "Empty response — no workers available"}
+    return r.json()
 
 
 # ── vastai_delete ─────────────────────────────────────────────────────
