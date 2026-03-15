@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     vastai_api_key: str = ""
     vastai_url: str = "https://console.vast.ai"
+    vastai_run_url: str = "https://run.vast.ai"
 
 
 _settings: Settings | None = None

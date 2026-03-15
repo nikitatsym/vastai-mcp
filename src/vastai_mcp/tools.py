@@ -344,7 +344,7 @@ def list_workergroups():
 @_op(vastai_read)
 def get_endpoint_logs(endpoint: str, tail: int = 100):
     """Get endpoint logs. tail: number of lines."""
-    return _ok(_get_client().post(
+    return _ok(_get_client().run_post(
         "/get_endpoint_logs/", json={"endpoint": endpoint, "tail": tail},
     ))
 
@@ -352,13 +352,13 @@ def get_endpoint_logs(endpoint: str, tail: int = 100):
 @_op(vastai_read)
 def get_endpoint_workers(id: int):
     """Get endpoint workers."""
-    return _ok(_get_client().post("/get_endpoint_workers/", json={"id": id}))
+    return _ok(_get_client().run_post("/get_endpoint_workers/", json={"id": id}))
 
 
 @_op(vastai_read)
 def get_workergroup_logs(id: int, tail: int = 100):
     """Get worker group logs. tail: number of lines."""
-    return _ok(_get_client().post(
+    return _ok(_get_client().run_post(
         "/get_workergroup_logs/", json={"id": id, "tail": tail},
     ))
 
@@ -366,7 +366,7 @@ def get_workergroup_logs(id: int, tail: int = 100):
 @_op(vastai_read)
 def get_workergroup_workers(id: int):
     """Get worker group workers."""
-    return _ok(_get_client().post("/get_workergroup_workers/", json={"id": id}))
+    return _ok(_get_client().run_post("/get_workergroup_workers/", json={"id": id}))
 
 
 # ── vastai_write ──────────────────────────────────────────────────────
@@ -750,25 +750,10 @@ def cloud_copy(
 @_op(vastai_execute)
 def route_request(endpoint: str, cost: float | None = None):
     """Route a request to a serverless endpoint. Returns worker URL if available."""
-    import httpx as _httpx
-
-    from .config import get_settings
-
     body: dict = {"endpoint": endpoint}
     if cost is not None:
         body["cost"] = cost
-    s = get_settings()
-    r = _httpx.post(
-        "https://run.vast.ai/route/",
-        headers={"Authorization": f"Bearer {s.vastai_api_key}"},
-        json=body,
-        timeout=30.0,
-    )
-    if r.status_code >= 400:
-        raise ValueError(f"Route failed: {r.status_code} {r.text}")
-    if not r.content:
-        return {"status": "no_workers", "detail": "Empty response — no workers available"}
-    return r.json()
+    return _ok(_get_client().run_post("/route/", json=body))
 
 
 # ── vastai_delete ─────────────────────────────────────────────────────

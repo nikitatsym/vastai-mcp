@@ -20,10 +20,17 @@ class VastClient:
     ):
         s = get_settings()
         self._base = (base_url or s.vastai_url).rstrip("/")
+        self._run_base = s.vastai_run_url.rstrip("/")
         self._key = api_key or s.vastai_api_key
+        headers = {"Authorization": f"Bearer {self._key}"}
         self._http = httpx.Client(
             base_url=self._base,
-            headers={"Authorization": f"Bearer {self._key}"},
+            headers=headers,
+            timeout=30.0,
+        )
+        self._run_http = httpx.Client(
+            base_url=self._run_base,
+            headers=headers,
             timeout=30.0,
         )
 
@@ -49,6 +56,14 @@ class VastClient:
 
     def delete(self, path: str, **kwargs):
         return self._handle(self._http.delete(path, **kwargs))
+
+    def run_post(self, path: str, **kwargs):
+        """POST to run.vast.ai (serverless runtime API)."""
+        return self._handle(self._run_http.post(path, **kwargs))
+
+    def run_get(self, path: str, **kwargs):
+        """GET from run.vast.ai (serverless runtime API)."""
+        return self._handle(self._run_http.get(path, **kwargs))
 
     def fetch_url(self, url: str) -> str | dict | None:
         """Fetch an absolute URL (for result_url pattern)."""
