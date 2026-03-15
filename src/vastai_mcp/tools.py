@@ -112,6 +112,28 @@ def _parse_gpu_ram(value: str, target_unit: str) -> float:
     return num / 1024
 
 
+def _validate_env(env: str) -> None:
+    """Raise ValueError if env string has common mistakes."""
+    errors = []
+    if "-p " in env or env.endswith("-p"):
+        errors.append(
+            "'-p PORT:PORT' in env does NOT create port mappings — "
+            "vast.ai parses it as a broken env var. "
+            "Ports are mapped automatically for serverless, or use direct_port_count for instances"
+        )
+    # Check for -e values with unquoted spaces: -e KEY=val1 val2
+    for m in re.finditer(r"-e\s+(\S+=\S*)\s+([^-]\S*)", env):
+        key_val, orphan = m.group(1), m.group(2)
+        if not orphan.startswith("-"):
+            errors.append(
+                f"'{key_val}' is followed by '{orphan}' which will be lost — "
+                f"vast.ai splits on spaces. Use '-e {key_val} {orphan}' won't work either. "
+                f"Combine into the value without spaces or use a different approach"
+            )
+    if errors:
+        raise ValueError(f"env string is invalid: {'; '.join(errors)}")
+
+
 def _validate_search_params(params: str) -> None:
     """Raise ValueError if search_params is missing critical filters."""
     errors = []
@@ -540,7 +562,15 @@ def create_template(
     private: bool | None = None,
     args_str: str | None = None,
 ):
-    """Create an instance template. env is a Docker flags STRING, not a dict (e.g. '-e VAR=val -e FOO=bar -p 8000:8000'). For serverless, set recommended_disk_space."""
+    """Create an instance template.
+
+    env: Docker flags STRING, not a dict (e.g. '-e VAR=val -e FOO=bar').
+        WARNING: '-p PORT:PORT' does NOT create port mappings — vast.ai parses it as a broken env var.
+        Ports are mapped automatically for serverless. Use direct_port_count for instances.
+        Values with spaces after -e KEY=val will be split and lost.
+    """
+    if env is not None:
+        _validate_env(env)
     body: dict = {"name": name, "image": image}
     if tag is not None:
         body["tag"] = tag
@@ -572,15 +602,23 @@ def edit_template(
     hash_id: str,
     name: str | None = None,
     image: str | None = None,
+    env: str | None = None,
     desc: str | None = None,
     recommended_disk_space: float | None = None,
 ):
-    """Edit an existing template."""
+    """Edit an existing template.
+
+    env: Docker flags STRING (e.g. '-e VAR=val'). Same validation as create_template.
+    """
+    if env is not None:
+        _validate_env(env)
     body: dict = {"hash_id": hash_id}
     if name is not None:
         body["name"] = name
     if image is not None:
         body["image"] = image
+    if env is not None:
+        body["env"] = env
     if desc is not None:
         body["desc"] = desc
     if recommended_disk_space is not None:
