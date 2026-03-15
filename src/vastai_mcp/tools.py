@@ -420,7 +420,7 @@ def create_instance(
     python_utf8: bool | None = None,
     lang_utf8: bool | None = None,
 ):
-    """Rent a GPU instance from an offer. id = offer ID."""
+    """Rent a GPU instance from an offer. id = offer ID. env is a dict (e.g. {'VAR': 'val'}), unlike templates where env is a Docker flags string."""
     body: dict = {"client_id": "me", "image": image, "disk": disk}
     if label is not None:
         body["label"] = label
@@ -486,7 +486,7 @@ def create_template(
     name: str,
     image: str,
     tag: str | None = None,
-    env: dict | None = None,
+    env: str | None = None,
     onstart: str | None = None,
     runtype: str | None = None,
     desc: str | None = None,
@@ -497,7 +497,7 @@ def create_template(
     private: bool | None = None,
     args_str: str | None = None,
 ):
-    """Create an instance template."""
+    """Create an instance template. env is a Docker flags STRING, not a dict (e.g. '-e VAR=val -e FOO=bar -p 8000:8000'). For serverless, set recommended_disk_space."""
     body: dict = {"name": name, "image": image}
     if tag is not None:
         body["tag"] = tag
