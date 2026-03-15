@@ -57,7 +57,7 @@ def _build_offer_query(
 ) -> dict:
     if raw_query is not None:
         return raw_query if isinstance(raw_query, dict) else {}
-    q: dict = {}
+    q: dict = {"verified": {"eq": True}, "external": {"eq": False}, "rentable": {"eq": True}, "rented": {"eq": False}}
     if gpu_name is not None:
         q["gpu_name"] = {"eq": gpu_name}
     if num_gpus is not None:
@@ -196,11 +196,11 @@ def search_offers(
         dph_total=dph_total, reliability=reliability, geolocation=geolocation,
         type=type, verified=verified, datacenter=datacenter, raw_query=raw_query,
     )
-    body: dict = {"q": q, "limit": limit}
+    q["limit"] = {"eq": limit}
     order_val = _parse_order(order)
     if order_val:
-        body["order"] = order_val
-    result = _get_client().post("/api/v0/bundles/", json=body)
+        q["order"] = order_val
+    result = _get_client().post("/api/v0/bundles/", json=q)
     if isinstance(result, dict) and "offers" in result:
         result["offers"] = _slim_list(result["offers"], _SLIM_OFFER_FIELDS)
     return _ok(result)
