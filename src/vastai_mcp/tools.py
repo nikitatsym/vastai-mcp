@@ -90,6 +90,43 @@ def _parse_order(order: str | None) -> list | None:
     return [[order, "asc"]]
 
 
+# ── Validation helpers ────────────────────────────────────────────────
+
+_GPU_RAM_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(GB|MB)\s*$", re.IGNORECASE)
+
+
+def _parse_gpu_ram(value: str, target_unit: str) -> float:
+    """Parse '48GB' or '49152MB' into target unit. Raises ValueError without unit suffix."""
+    m = _GPU_RAM_RE.match(value)
+    if not m:
+        raise ValueError(
+            f"gpu_ram={value!r} — must include units, e.g. '48GB' or '49152MB'"
+        )
+    num = float(m.group(1))
+    unit = m.group(2).upper()
+    if unit == target_unit:
+        return num
+    if unit == "GB" and target_unit == "MB":
+        return num * 1024
+    # MB -> GB
+    return num / 1024
+
+
+def _validate_search_params(params: str) -> None:
+    """Raise ValueError if search_params is missing critical filters."""
+    errors = []
+    if "rentable" not in params:
+        errors.append("missing 'rentable=true' — engine will try to rent unrentable machines")
+    if "rented" not in params:
+        errors.append("missing 'rented=false' — engine will try to rent already-rented machines")
+    if errors:
+        raise ValueError(
+            f"search_params={params!r} is invalid: {'; '.join(errors)}. "
+            f"API default is 'verified=true rentable=true rented=false' — your params REPLACE it entirely."
+        )
+
+
+
 # ── Result URL helper ─────────────────────────────────────────────────
 
 def _fetch_result(result: dict | None) -> str | dict | None:
@@ -185,7 +222,7 @@ def search_offers(
     limit: int = 20,
     gpu_name: str | None = None,
     num_gpus: int | None = None,
-    gpu_ram: float | None = None,
+    gpu_ram: str | None = None,
     dph_total: float | None = None,
     reliability: float | None = None,
     geolocation: str | None = None,
@@ -195,9 +232,10 @@ def search_offers(
     order: str | None = None,
     raw_query: dict | None = None,
 ):
-    """Search GPU offers. gpu_ram in MB (e.g. 49152 for 48GB), dph_total in $/hr. raw_query overrides all filters."""
+    """Search GPU offers. gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses MB). dph_total in $/hr. type: 'on-demand', 'bid', or 'interruptible'. raw_query overrides all filters."""
+    gpu_ram_mb = _parse_gpu_ram(gpu_ram, "MB") if gpu_ram is not None else None
     q = _build_offer_query(
-        gpu_name=gpu_name, num_gpus=num_gpus, gpu_ram=gpu_ram,
+        gpu_name=gpu_name, num_gpus=num_gpus, gpu_ram=gpu_ram_mb,
         dph_total=dph_total, reliability=reliability, geolocation=geolocation,
         type=type, verified=verified, datacenter=datacenter, raw_query=raw_query,
     )
@@ -348,7 +386,7 @@ def list_workergroups():
 
 @_op(vastai_read)
 def get_endpoint_logs(endpoint: str, tail: int = 500):
-    """Get endpoint logs. tail: characters per log level."""
+    """Get endpoint logs. tail: characters per log level (default 500). Increase for more history."""
     return _ok(_get_client().run_post(
         "/get_endpoint_logs/", json={"endpoint": endpoint, "tail": tail},
     ))
@@ -362,7 +400,7 @@ def get_endpoint_workers(id: int):
 
 @_op(vastai_read)
 def get_workergroup_logs(id: int, tail: int = 500):
-    """Get worker group logs. tail: characters per log level."""
+    """Get worker group logs. tail: characters per log level (default 500). Increase for more history."""
     return _ok(_get_client().run_post(
         "/get_workergroup_logs/", json={"id": id, "tail": tail},
     ))
@@ -630,9 +668,19 @@ def create_workergroup(
     cold_workers: int | None = None,
     max_workers: int | None = None,
     test_workers: int | None = None,
-    gpu_ram: float | None = None,
+    gpu_ram: str | None = None,
 ):
-    """Create a worker group for a serverless endpoint. gpu_ram in GB (e.g. 48). search_params is CLI-format string with GB units (e.g. 'gpu_ram>=48 verified=true')."""
+    """Create a worker group for a serverless endpoint.
+
+    gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
+    search_params: CLI-format string with GB units (e.g. 'gpu_ram>=48 verified=true rentable=true rented=false').
+        API default is 'verified=true rentable=true rented=false'. Your params REPLACE it entirely.
+        MUST include 'rentable=true rented=false' or engine will try unrentable/rented machines.
+    launch_args: CLI-format string (e.g. '--model /model --ctx 4096').
+    """
+    if search_params is not None:
+        _validate_search_params(search_params)
+    gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
     body: dict = {"endpoint_name": endpoint_name}
     if endpoint_id is not None:
         body["endpoint_id"] = endpoint_id
@@ -656,8 +704,8 @@ def create_workergroup(
         body["max_workers"] = max_workers
     if test_workers is not None:
         body["test_workers"] = test_workers
-    if gpu_ram is not None:
-        body["gpu_ram"] = gpu_ram
+    if gpu_ram_gb is not None:
+        body["gpu_ram"] = gpu_ram_gb
     return _ok(_get_client().post("/api/v0/workergroups/", json=body))
 
 
@@ -672,11 +720,21 @@ def update_workergroup(
     target_util: float | None = None,
     cold_mult: float | None = None,
     test_workers: int | None = None,
-    gpu_ram: float | None = None,
+    gpu_ram: str | None = None,
     endpoint_name: str | None = None,
     endpoint_id: int | None = None,
 ):
-    """Update a worker group. gpu_ram in GB. search_params is CLI-format string with GB units."""
+    """Update a worker group.
+
+    gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
+    search_params: CLI-format string with GB units.
+        Your params REPLACE API defaults entirely.
+        MUST include 'rentable=true rented=false' or engine will try unrentable/rented machines.
+    launch_args: CLI-format string.
+    """
+    if search_params is not None:
+        _validate_search_params(search_params)
+    gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
     body: dict = {}
     if template_hash is not None:
         body["template_hash"] = template_hash
@@ -694,8 +752,8 @@ def update_workergroup(
         body["cold_mult"] = cold_mult
     if test_workers is not None:
         body["test_workers"] = test_workers
-    if gpu_ram is not None:
-        body["gpu_ram"] = gpu_ram
+    if gpu_ram_gb is not None:
+        body["gpu_ram"] = gpu_ram_gb
     if endpoint_name is not None:
         body["endpoint_name"] = endpoint_name
     if endpoint_id is not None:
@@ -754,7 +812,7 @@ def cloud_copy(
 
 @_op(vastai_execute)
 def route_request(endpoint: str, cost: float | None = None):
-    """Route a request to a serverless endpoint. Returns worker URL if available."""
+    """Route a request to a serverless endpoint. endpoint: endpoint name (string). Returns worker URL if available."""
     body: dict = {"endpoint": endpoint}
     if cost is not None:
         body["cost"] = cost
