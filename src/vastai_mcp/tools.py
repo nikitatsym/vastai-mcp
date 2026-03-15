@@ -762,7 +762,7 @@ def create_workergroup(
     if search_params is not None:
         search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
-    body: dict = {"endpoint_name": endpoint_name}
+    body: dict = {"endpoint_name": endpoint_name, "client_id": "me"}
     if endpoint_id is not None:
         body["endpoint_id"] = endpoint_id
     if template_hash is not None:
@@ -781,10 +781,8 @@ def create_workergroup(
         body["cold_mult"] = cold_mult
     if cold_workers is not None:
         body["cold_workers"] = cold_workers
-    if max_workers is not None:
-        body["max_workers"] = max_workers
-    if test_workers is not None:
-        body["test_workers"] = test_workers
+    body["max_workers"] = max_workers if max_workers is not None else 20
+    body["test_workers"] = test_workers if test_workers is not None else 3
     if gpu_ram_gb is not None:
         body["gpu_ram"] = gpu_ram_gb
     return _ok(_get_client().post("/api/v0/workergroups/", json=body))
@@ -817,7 +815,7 @@ def update_workergroup(
     if search_params is not None:
         search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
-    body: dict = {}
+    body: dict = {"client_id": "me"}
     if template_hash is not None:
         body["template_hash"] = template_hash
     if template_id is not None:

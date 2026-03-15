@@ -55,7 +55,7 @@ class VastClient:
         return self._handle(self._http.put(path, **kwargs))
 
     def delete(self, path: str, **kwargs):
-        return self._handle(self._http.delete(path, **kwargs))
+        return self._handle(self._http.request("DELETE", path, **kwargs))
 
     def run_post(self, path: str, **kwargs):
         """POST to run.vast.ai (serverless runtime API)."""
