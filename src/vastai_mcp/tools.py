@@ -342,8 +342,8 @@ def list_workergroups():
 
 
 @_op(vastai_read)
-def get_endpoint_logs(endpoint: str, tail: int = 100):
-    """Get endpoint logs. tail: number of lines."""
+def get_endpoint_logs(endpoint: str, tail: int = 500):
+    """Get endpoint logs. tail: characters per log level."""
     return _ok(_get_client().run_post(
         "/get_endpoint_logs/", json={"endpoint": endpoint, "tail": tail},
     ))
@@ -356,8 +356,8 @@ def get_endpoint_workers(id: int):
 
 
 @_op(vastai_read)
-def get_workergroup_logs(id: int, tail: int = 100):
-    """Get worker group logs. tail: number of lines."""
+def get_workergroup_logs(id: int, tail: int = 500):
+    """Get worker group logs. tail: characters per log level."""
     return _ok(_get_client().run_post(
         "/get_workergroup_logs/", json={"id": id, "tail": tail},
     ))
