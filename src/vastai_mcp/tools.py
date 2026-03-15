@@ -190,7 +190,7 @@ def search_offers(
     order: str | None = None,
     raw_query: dict | None = None,
 ):
-    """Search GPU offers. gpu_ram/dph_total filter by gte/lte. raw_query overrides all filters."""
+    """Search GPU offers. gpu_ram in MB (e.g. 49152 for 48GB), dph_total in $/hr. raw_query overrides all filters."""
     q = _build_offer_query(
         gpu_name=gpu_name, num_gpus=num_gpus, gpu_ram=gpu_ram,
         dph_total=dph_total, reliability=reliability, geolocation=geolocation,
@@ -627,7 +627,7 @@ def create_workergroup(
     test_workers: int | None = None,
     gpu_ram: float | None = None,
 ):
-    """Create a worker group for a serverless endpoint."""
+    """Create a worker group for a serverless endpoint. gpu_ram in GB (e.g. 48). search_params is CLI-format string with GB units (e.g. 'gpu_ram>=48 verified=true')."""
     body: dict = {"endpoint_name": endpoint_name}
     if endpoint_id is not None:
         body["endpoint_id"] = endpoint_id
@@ -671,7 +671,7 @@ def update_workergroup(
     endpoint_name: str | None = None,
     endpoint_id: int | None = None,
 ):
-    """Update a worker group."""
+    """Update a worker group. gpu_ram in GB. search_params is CLI-format string with GB units."""
     body: dict = {}
     if template_hash is not None:
         body["template_hash"] = template_hash
