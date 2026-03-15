@@ -57,7 +57,7 @@ def _build_offer_query(
 ) -> dict:
     if raw_query is not None:
         return raw_query if isinstance(raw_query, dict) else {}
-    q: dict = {"rentable": {"eq": True}}
+    q: dict = {}
     if gpu_name is not None:
         q["gpu_name"] = {"eq": gpu_name}
     if num_gpus is not None:
