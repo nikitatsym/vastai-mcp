@@ -65,18 +65,3 @@ class VastClient:
         """GET from run.vast.ai (serverless runtime API)."""
         return self._handle(self._run_http.get(path, **kwargs))
 
-    def fetch_url(self, url: str) -> str | dict | None:
-        """Fetch an absolute URL (for result_url pattern). No auth — presigned URLs carry their own credentials."""
-        r = httpx.get(url, timeout=60.0)
-        if r.status_code >= 400:
-            try:
-                body = r.json()
-            except Exception:
-                body = r.text
-            raise APIError(r.status_code, "GET", url, body)
-        if not r.content:
-            return None
-        ct = r.headers.get("content-type", "")
-        if "application/json" in ct:
-            return r.json()
-        return r.text

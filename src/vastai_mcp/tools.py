@@ -1,4 +1,7 @@
 import re
+import time
+
+import httpx
 
 from .client import VastClient
 from .registry import ROOT, Group, _op
@@ -152,12 +155,29 @@ def _validate_search_params(params: str) -> None:
 # ── Result URL helper ─────────────────────────────────────────────────
 
 def _fetch_result(result: dict | None) -> str | dict | None:
+    """Fetch async result from result_url, polling until ready.
+
+    vast.ai API is async: PUT triggers log/command collection, result
+    appears on S3 after a delay.  Official CLI polls 30×0.3s — we match that.
+    """
     if not isinstance(result, dict):
         return result
     url = result.get("result_url")
     if not url:
         return result
-    return _get_client().fetch_url(url)
+
+    for _ in range(30):
+        time.sleep(0.3)
+        r = httpx.get(url, timeout=60.0)
+        if r.status_code == 200:
+            if not r.content:
+                return None
+            ct = r.headers.get("content-type", "")
+            if "application/json" in ct:
+                return r.json()
+            return re.sub(r'\n\s*\n', '\n', r.text)
+
+    return result.get("msg", f"Logs not available (result_url returned {r.status_code})")
 
 
 # ── Groups ────────────────────────────────────────────────────────────
@@ -321,11 +341,15 @@ def show_instance_ssh_keys(instance_id: int):
 @_op(vastai_read)
 def show_logs(
     id: int,
-    tail: int = 100,
+    tail: int = 500,
     filter: str | None = None,
     daemon_logs: bool = False,
 ):
-    """Get instance logs. tail: number of lines (0=all). filter: regex grep."""
+    """Get instance logs (async — polls S3 up to ~9s for result).
+
+    tail: number of lines (0=all, default 500). filter: regex grep.
+    daemon_logs: if true, fetch daemon/system logs instead of user logs.
+    Instance must be running — loading instances have no logs yet."""
     body: dict = {"tail": str(tail)}
     if daemon_logs:
         body["daemon_logs"] = True
@@ -815,7 +839,7 @@ def recycle_instance(id: int):
 
 @_op(vastai_execute)
 def execute_command(id: int, command: str):
-    """Execute a command on an instance. Returns command output."""
+    """Execute a command on an instance (async — polls S3 up to ~9s for result)."""
     result = _get_client().put(
         f"/api/v0/instances/command/{id}/", json={"command": command},
     )
