@@ -735,7 +735,8 @@ def create_workergroup(
     """Create a worker group for a serverless endpoint.
 
     gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
-    search_params: CLI-format string with GB units (e.g. 'gpu_ram>=48 verified=true rentable=true rented=false').
+    search_params: CLI-format string (e.g. 'gpu_name=RTX_3060 gpu_ram>=12 verified=true rentable=true rented=false').
+        GPU names use underscores not spaces (RTX_3060, RTX_4090, A100_SXM4, etc.).
         API default is 'verified=true rentable=true rented=false'. Your params REPLACE it entirely.
         MUST include 'rentable=true rented=false' or engine will try unrentable/rented machines.
     launch_args: CLI-format string (e.g. '--model /model --ctx 4096').
@@ -789,7 +790,8 @@ def update_workergroup(
     """Update a worker group.
 
     gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
-    search_params: CLI-format string with GB units.
+    search_params: CLI-format string (e.g. 'gpu_name=RTX_3060 gpu_ram>=12 verified=true rentable=true rented=false').
+        GPU names use underscores not spaces (RTX_3060, RTX_4090, A100_SXM4, etc.).
         Your params REPLACE API defaults entirely.
         MUST include 'rentable=true rented=false' or engine will try unrentable/rented machines.
     launch_args: CLI-format string.
