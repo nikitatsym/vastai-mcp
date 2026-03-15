@@ -137,18 +137,36 @@ def _validate_env(env: str) -> None:
         raise ValueError(f"env string is invalid: {'; '.join(errors)}")
 
 
-def _validate_search_params(params: str) -> None:
-    """Raise ValueError if search_params is missing critical filters."""
+_SEARCH_GPU_RAM_RE = re.compile(r"gpu_ram\s*[><=!]+\s*(\S+)")
+
+
+def _validate_search_params(params: str) -> str:
+    """Validate and normalize search_params. Returns cleaned string."""
     errors = []
     if "rentable" not in params:
         errors.append("missing 'rentable=true' — engine will try to rent unrentable machines")
     if "rented" not in params:
         errors.append("missing 'rented=false' — engine will try to rent already-rented machines")
+    # gpu_ram in search_params is interpreted as GB by the API.
+    # Require explicit units to prevent e.g. gpu_ram>=10000 (=10TB) mistakes.
+    ram_m = _SEARCH_GPU_RAM_RE.search(params)
+    if ram_m:
+        val = ram_m.group(1)
+        if not _GPU_RAM_RE.match(val):
+            errors.append(
+                f"gpu_ram value '{val}' must include units (e.g. '12GB' or '12288MB'). "
+                f"API interprets bare numbers as GB — gpu_ram>=10000 means 10TB"
+            )
     if errors:
         raise ValueError(
             f"search_params={params!r} is invalid: {'; '.join(errors)}. "
             f"API default is 'verified=true rentable=true rented=false' — your params REPLACE it entirely."
         )
+    # Convert gpu_ram units to bare GB number for API
+    if ram_m:
+        gb = _parse_gpu_ram(ram_m.group(1), "GB")
+        params = params[:ram_m.start(1)] + str(gb) + params[ram_m.end(1):]
+    return params
 
 
 
@@ -742,7 +760,7 @@ def create_workergroup(
     launch_args: CLI-format string (e.g. '--model /model --ctx 4096').
     """
     if search_params is not None:
-        _validate_search_params(search_params)
+        search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
     body: dict = {"endpoint_name": endpoint_name}
     if endpoint_id is not None:
@@ -797,7 +815,7 @@ def update_workergroup(
     launch_args: CLI-format string.
     """
     if search_params is not None:
-        _validate_search_params(search_params)
+        search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
     body: dict = {}
     if template_hash is not None:
