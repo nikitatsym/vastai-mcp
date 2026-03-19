@@ -4,12 +4,6 @@ MCP server for Vast.ai GPU marketplace.
 
 ## Install
 
-```
-uvx --extra-index-url https://nikitatsym.github.io/vastai-mcp/simple vastai-mcp
-```
-
-## Configure
-
 ```json
 {
   "mcpServers": {
