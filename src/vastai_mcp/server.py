@@ -35,15 +35,47 @@ def _is_bool_hint(hint) -> bool:
     return bool in args if args else False
 
 
+def _get_literal_values(hint) -> tuple | None:
+    origin = typing.get_origin(hint)
+    if origin is typing.Literal:
+        return typing.get_args(hint)
+    # Handle Optional[Literal[...]] = Union[Literal[...], None]
+    if origin is typing.Union:
+        for arg in typing.get_args(hint):
+            if typing.get_origin(arg) is typing.Literal:
+                return typing.get_args(arg)
+    return None
+
+
 def _coerce_call(fn, params: dict):
     sig = inspect.signature(fn)
     hints = typing.get_type_hints(fn)
+
+    # Reject unknown params
+    valid = set(sig.parameters.keys())
+    unknown = set(params.keys()) - valid
+    if unknown:
+        raise ValueError(
+            f"Unknown parameters: {sorted(unknown)}. "
+            f"Valid: {sorted(valid)}"
+        )
+
     kwargs = {}
     for name, param in sig.parameters.items():
         if name not in params:
             continue
         val = params[name]
         hint = hints.get(name)
+
+        # Validate Literal values
+        if hint and val is not None:
+            lit_vals = _get_literal_values(hint)
+            if lit_vals and val not in lit_vals:
+                raise ValueError(
+                    f"Invalid value {val!r} for '{name}'. "
+                    f"Accepted: {', '.join(repr(v) for v in lit_vals)}"
+                )
+
         if hint and _is_bool_hint(hint) and not isinstance(val, bool):
             default = param.default
             if default is inspect.Parameter.empty or default is None:
@@ -53,14 +85,42 @@ def _coerce_call(fn, params: dict):
     return fn(**kwargs)
 
 
+def _format_type(hint) -> str:
+    origin = typing.get_origin(hint)
+    if origin is typing.Literal:
+        vals = typing.get_args(hint)
+        return "|".join(str(v) for v in vals)
+    if origin is typing.Union:
+        args = [a for a in typing.get_args(hint) if a is not type(None)]
+        if len(args) == 1:
+            return _format_type(args[0])
+        return "|".join(_format_type(a) for a in args)
+    if hint is str:
+        return "str"
+    if hint is int:
+        return "int"
+    if hint is float:
+        return "float"
+    if hint is bool:
+        return "bool"
+    return str(hint)
+
+
 def _build_help(group_name: str) -> str:
     ops = _group_ops[group_name]
     lines = []
     for pascal_name, fn in ops.items():
         sig = inspect.signature(fn)
-        params = ", ".join(sig.parameters.keys())
+        hints = typing.get_type_hints(fn)
+        parts = []
+        for pname, param in sig.parameters.items():
+            hint = hints.get(pname)
+            if hint:
+                parts.append(f"{pname}: {_format_type(hint)}")
+            else:
+                parts.append(pname)
         doc = fn.__doc__.split("\n")[0]
-        lines.append(f"  {pascal_name}({params}) — {doc}")
+        lines.append(f"  {pascal_name}({', '.join(parts)}) — {doc}")
     return f"{len(lines)} operations available:\n" + "\n".join(lines)
 
 

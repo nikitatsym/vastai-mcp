@@ -1,5 +1,6 @@
 import re
 import time
+from typing import Literal
 
 import httpx
 
@@ -53,20 +54,52 @@ def _slim_list(items: list, fields: set) -> list:
 
 # ── Search helpers ────────────────────────────────────────────────────
 
+def _parse_ram_mb(value: str) -> float:
+    """Parse '24GB' or '24564MB' → MB. Crashes on bare numbers or missing units."""
+    if isinstance(value, (int, float)):
+        raise ValueError(
+            f"gpu_ram={value!r} — must include units, e.g. '24GB' or '24564MB'. "
+            f"Bare numbers are ambiguous."
+        )
+    m = _GPU_RAM_RE.match(str(value))
+    if not m:
+        raise ValueError(
+            f"gpu_ram={value!r} — must include units, e.g. '24GB' or '24564MB'"
+        )
+    num = float(m.group(1))
+    unit = m.group(2).upper()
+    if unit == "MB":
+        return num
+    return num * 1024
+
+
+def _ram_mb_floor(mb: float) -> int:
+    """3% below nominal — GPUs report slightly less (24GB = 24564 not 24576 MB)."""
+    return round(mb * 0.97)
+
+
+def _ram_mb_ceil(mb: float) -> int:
+    """3% above nominal — GPUs report slightly less (24GB = 24564 not 24576 MB)."""
+    return round(mb * 1.03)
+
+
 def _build_offer_query(
-    gpu_name=None, num_gpus=None, gpu_ram=None, dph_total=None,
-    reliability=None, geolocation=None, type=None, verified=None,
-    datacenter=None, raw_query=None,
+    gpu_name=None, num_gpus=None, gpu_ram_min_mb=None, gpu_ram_max_mb=None,
+    dph_total=None, reliability=None, geolocation=None, type=None,
+    verified=None, datacenter=None,
 ) -> dict:
-    if raw_query is not None:
-        return raw_query if isinstance(raw_query, dict) else {}
     q: dict = {"verified": {"eq": True}, "external": {"eq": False}, "rentable": {"eq": True}, "rented": {"eq": False}}
     if gpu_name is not None:
         q["gpu_name"] = {"eq": gpu_name}
     if num_gpus is not None:
         q["num_gpus"] = {"eq": num_gpus}
-    if gpu_ram is not None:
-        q["gpu_ram"] = {"gte": gpu_ram}
+    if gpu_ram_min_mb is not None or gpu_ram_max_mb is not None:
+        ram = {}
+        if gpu_ram_min_mb is not None:
+            ram["gte"] = _ram_mb_floor(gpu_ram_min_mb)
+        if gpu_ram_max_mb is not None:
+            ram["lte"] = _ram_mb_ceil(gpu_ram_max_mb)
+        q["gpu_ram"] = ram
     if dph_total is not None:
         q["dph_total"] = {"lte": dph_total}
     if reliability is not None:
@@ -282,22 +315,24 @@ def search_offers(
     limit: int = 20,
     gpu_name: str | None = None,
     num_gpus: int | None = None,
-    gpu_ram: str | None = None,
+    gpu_ram_min: str | None = None,
+    gpu_ram_max: str | None = None,
     dph_total: float | None = None,
     reliability: float | None = None,
     geolocation: str | None = None,
-    type: str | None = None,
+    type: Literal["on-demand", "bid", "interruptible"] | None = None,
     verified: bool | None = None,
     datacenter: bool | None = None,
     order: str | None = None,
-    raw_query: dict | None = None,
 ):
-    """Search GPU offers. gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses MB). dph_total in $/hr. type: 'on-demand', 'bid', or 'interruptible'. raw_query overrides all filters."""
-    gpu_ram_mb = _parse_gpu_ram(gpu_ram, "MB") if gpu_ram is not None else None
+    """Search GPU offers. gpu_ram_min/gpu_ram_max require units: '24GB' or '24564MB'. dph_total in $/hr."""
+    ram_min_mb = _parse_ram_mb(gpu_ram_min) if gpu_ram_min is not None else None
+    ram_max_mb = _parse_ram_mb(gpu_ram_max) if gpu_ram_max is not None else None
     q = _build_offer_query(
-        gpu_name=gpu_name, num_gpus=num_gpus, gpu_ram=gpu_ram_mb,
+        gpu_name=gpu_name, num_gpus=num_gpus,
+        gpu_ram_min_mb=ram_min_mb, gpu_ram_max_mb=ram_max_mb,
         dph_total=dph_total, reliability=reliability, geolocation=geolocation,
-        type=type, verified=verified, datacenter=datacenter, raw_query=raw_query,
+        type=type, verified=verified, datacenter=datacenter,
     )
     q["limit"] = {"eq": limit}
     order_val = _parse_order(order)
@@ -553,8 +588,8 @@ def create_instance(
 
 
 @_op(vastai_write)
-def manage_instance(id: int, state: str | None = None, label: str | None = None):
-    """Start, stop, or relabel an instance. state: 'running' or 'stopped'."""
+def manage_instance(id: int, state: Literal["running", "stopped"] | None = None, label: str | None = None):
+    """Start, stop, or relabel an instance."""
     body: dict = {}
     if state is not None:
         body["state"] = state
