@@ -1,15 +1,27 @@
 """Tests for validation: crash on bad input, types, Literal enforcement."""
 
+import json
+
+import httpx
 import pytest
 
+from vastai_mcp import tools
+from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.tools import (
     _build_offer_query,
+    _parse_date_ts,
     _parse_order,
+    _parse_order_by,
     _parse_ram_mb,
     _ram_mb_ceil,
     _ram_mb_floor,
+    _resolve_gpu_name,
     _validate_env,
     _validate_search_params,
+    search_invoices,
+    search_offers,
+    search_templates,
+    show_invoices_v1,
 )
 from vastai_mcp.server import (
     _all_grouped,
@@ -253,7 +265,7 @@ class TestBuildHelp:
 
     def test_shows_operation_count(self):
         h = _build_help("vastai_read")
-        assert h.startswith("23 operations available:")
+        assert h.startswith("24 operations available:")
 
 
 # ── _to_pascal ───────────────────────────────────────────────────────
@@ -521,6 +533,179 @@ class TestValidateSearchParams:
             "rentable=true rented=false gpu_name=RTX_4090"
         )
         assert result == "rentable=true rented=false gpu_name=RTX_4090"
+
+
+# ── _parse_order_by ──────────────────────────────────────────────────
+
+class TestParseOrderBy:
+    def test_none(self):
+        assert _parse_order_by(None) is None
+
+    def test_asc_default(self):
+        assert _parse_order_by("count_created") == [{"col": "count_created", "dir": "asc"}]
+
+    def test_desc_prefix(self):
+        assert _parse_order_by("-count_created") == [{"col": "count_created", "dir": "desc"}]
+
+
+# ── _resolve_gpu_name ────────────────────────────────────────────────
+
+@pytest.fixture
+def gpu_catalog(monkeypatch):
+    monkeypatch.setattr(tools, "_GPU_NAMES", ["RTX 4090", "A100 PCIE", "GTX 1650 S"])
+
+
+class TestResolveGpuName:
+    def test_exact(self, gpu_catalog):
+        assert _resolve_gpu_name("RTX 4090") == "RTX 4090"
+
+    def test_underscores(self, gpu_catalog):
+        assert _resolve_gpu_name("RTX_4090") == "RTX 4090"
+
+    def test_dashes_and_case(self, gpu_catalog):
+        assert _resolve_gpu_name("a100-pcie") == "A100 PCIE"
+
+    def test_unknown_crashes(self, gpu_catalog):
+        with pytest.raises(ValueError, match="not a known GPU"):
+            _resolve_gpu_name("RTX 9090")
+
+    def test_unknown_lists_valid(self, gpu_catalog):
+        with pytest.raises(ValueError, match="GTX 1650 S"):
+            _resolve_gpu_name("RTX 9090")
+
+
+# ── _parse_date_ts ───────────────────────────────────────────────────
+
+class TestParseDateTs:
+    def test_iso_date(self):
+        assert _parse_date_ts("2026-01-01", "start_date") == 1767225600
+
+    def test_epoch_int(self):
+        assert _parse_date_ts(1767225600, "start_date") == 1767225600
+
+    def test_epoch_string(self):
+        assert _parse_date_ts("1767225600", "start_date") == 1767225600
+
+    def test_garbage_crashes(self):
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            _parse_date_ts("last tuesday", "start_date")
+
+    def test_error_names_field(self):
+        with pytest.raises(ValueError, match="end_date="):
+            _parse_date_ts("nope", "end_date")
+
+
+# ── request shapes ───────────────────────────────────────────────────
+
+class _FakeClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def get(self, path, **kwargs):
+        self.calls.append(("GET", path, kwargs))
+        return self.response
+
+    def post(self, path, **kwargs):
+        self.calls.append(("POST", path, kwargs))
+        return self.response
+
+
+@pytest.fixture
+def fake_client(monkeypatch):
+    def install(response):
+        client = _FakeClient(response)
+        monkeypatch.setattr(tools, "_client", client)
+        return client
+    return install
+
+
+class TestSearchOffersRequest:
+    def test_limit_is_plain_int(self, fake_client):
+        """API rejects the {"eq": n} form with 400."""
+        client = fake_client({"offers": []})
+        search_offers(limit=5)
+        assert client.calls[0][2]["json"]["limit"] == 5
+
+    def test_limit_coerced_to_int(self, fake_client):
+        """A string limit is silently ignored by the API."""
+        client = fake_client({"offers": []})
+        search_offers(limit="5")
+        assert client.calls[0][2]["json"]["limit"] == 5
+
+    def test_gpu_name_resolved(self, fake_client, gpu_catalog):
+        client = fake_client({"offers": []})
+        search_offers(gpu_name="RTX_4090")
+        assert client.calls[0][2]["json"]["gpu_name"] == {"eq": "RTX 4090"}
+
+
+class TestSearchTemplatesRequest:
+    def test_select_filters_always_sent(self, fake_client):
+        """API returns 400 when select_filters is absent."""
+        client = fake_client({"templates": []})
+        search_templates()
+        assert json.loads(client.calls[0][2]["params"]["select_filters"]) == {}
+
+    def test_filters_and_order(self, fake_client):
+        client = fake_client({"templates": []})
+        search_templates(name="pytorch", recommended=True, order="-count_created", limit=5)
+        params = client.calls[0][2]["params"]
+        assert json.loads(params["select_filters"]) == {
+            "name": "pytorch", "recommended": {"eq": True},
+        }
+        assert json.loads(params["order_by"]) == [{"col": "count_created", "dir": "desc"}]
+        assert params["limit"] == 5
+
+    def test_templates_slimmed(self, fake_client):
+        fake_client({"templates": [{"id": 1, "name": "x", "docker_login_pass": "secret"}]})
+        result = search_templates()
+        assert result["templates"] == [{"id": 1, "name": "x"}]
+
+
+class TestInvoicesRequest:
+    def test_v0_path_has_trailing_slash(self, fake_client):
+        """Without it the API 301s and the HTML body breaks json()."""
+        client = fake_client([])
+        search_invoices()
+        assert client.calls[0][1] == "/api/v0/invoices/"
+
+    def test_v1_defaults_to_date_range(self, fake_client):
+        """API answers 'Invalid date range' when no range is sent."""
+        client = fake_client({"results": []})
+        show_invoices_v1()
+        window = json.loads(client.calls[0][2]["params"]["select_filters"])["when"]
+        assert window["lte"] - window["gte"] == 30 * 24 * 60 * 60
+
+    def test_v1_explicit_dates(self, fake_client):
+        client = fake_client({"results": []})
+        show_invoices_v1(start_date="2026-01-01", end_date="2026-01-08")
+        window = json.loads(client.calls[0][2]["params"]["select_filters"])["when"]
+        assert window == {"gte": 1767225600, "lte": 1767830400}
+
+    def test_v1_bad_date_crashes(self, fake_client):
+        fake_client({"results": []})
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            show_invoices_v1(start_date="yesterday")
+
+
+# ── client error handling ────────────────────────────────────────────
+
+class TestClientHandle:
+    def test_redirect_raises(self):
+        r = httpx.Response(
+            301, request=httpx.Request("GET", "https://console.vast.ai/api/v0/invoices"),
+            html="<html>moved</html>",
+        )
+        with pytest.raises(APIError):
+            VastClient()._handle(r)
+
+    def test_error_raises(self):
+        r = httpx.Response(
+            400, request=httpx.Request("POST", "https://console.vast.ai/api/v0/bundles/"),
+            json={"msg": "bad"},
+        )
+        with pytest.raises(APIError):
+            VastClient()._handle(r)
 
 
 # ── registration integrity ──────────────────────────────────────────

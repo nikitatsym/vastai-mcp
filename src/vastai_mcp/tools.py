@@ -1,5 +1,7 @@
+import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
@@ -33,6 +35,12 @@ _SLIM_OFFER_FIELDS = {
     "dph_total", "min_bid", "reliability",
     "inet_down", "inet_up", "geolocation",
     "cuda_max_good", "driver_version", "verification", "static_ip", "datacenter",
+}
+
+_SLIM_TEMPLATE_FIELDS = {
+    "id", "hash_id", "name", "image", "tag", "desc",
+    "recommended", "private", "count_created",
+    "runtype", "recommended_disk_space", "env", "onstart",
 }
 
 _SLIM_INSTANCE_FIELDS = {
@@ -124,6 +132,62 @@ def _parse_order(order: str | None) -> list | None:
     if len(parts) == 2 and parts[1] in ("asc", "desc"):
         return [[parts[0], parts[1]]]
     return [[order, "asc"]]
+
+
+def _parse_order_by(order: str | None) -> list | None:
+    """Same input as _parse_order, but /template/ wants {"col","dir"} dicts."""
+    pairs = _parse_order(order)
+    if pairs is None:
+        return None
+    return [{"col": col, "dir": direction} for col, direction in pairs]
+
+
+_GPU_NAMES: list[str] | None = None
+
+
+def _gpu_names() -> list[str]:
+    global _GPU_NAMES
+    if _GPU_NAMES is None:
+        result = _get_client().get("/api/v0/gpu_names/unique/")
+        _GPU_NAMES = result["gpu_names"]
+    return _GPU_NAMES
+
+
+def _normalize_gpu_name(name: str) -> str:
+    return re.sub(r"[\s_-]+", " ", name).strip().lower()
+
+
+def _resolve_gpu_name(name: str) -> str:
+    """CLI spelling ('RTX_4090') to API spelling ('RTX 4090'). Unknown name crashes.
+
+    The API silently returns zero offers for a name it doesn't know, so match
+    against the catalog first.
+    """
+    key = _normalize_gpu_name(name)
+    known = _gpu_names()
+    for candidate in known:
+        if _normalize_gpu_name(candidate) == key:
+            return candidate
+    raise ValueError(
+        f"gpu_name={name!r} is not a known GPU. Valid names: {', '.join(known)}"
+    )
+
+
+def _parse_date_ts(value: str | int, field: str) -> int:
+    """Parse 'YYYY-MM-DD' or epoch seconds into epoch seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field}={value!r} — expected 'YYYY-MM-DD' or epoch seconds")
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        return int(datetime.strptime(text + "+0000", "%Y-%m-%d%z").timestamp())
+    except ValueError:
+        raise ValueError(
+            f"{field}={value!r} — expected 'YYYY-MM-DD' or epoch seconds"
+        ) from None
 
 
 # ── Validation helpers ────────────────────────────────────────────────
@@ -325,16 +389,22 @@ def search_offers(
     datacenter: bool | None = None,
     order: str | None = None,
 ):
-    """Search GPU offers. gpu_ram_min/gpu_ram_max require units: '24GB' or '24564MB'. dph_total in $/hr."""
+    """Search GPU offers.
+
+    gpu_name: either spelling works ('RTX 4090' or 'RTX_4090'); see ListGpuNames for the catalog.
+    gpu_ram_min/gpu_ram_max require units: '24GB' or '24564MB'. dph_total in $/hr.
+    order: column name, '-column' or 'column-desc' (e.g. '-reliability')."""
     ram_min_mb = _parse_ram_mb(gpu_ram_min) if gpu_ram_min is not None else None
     ram_max_mb = _parse_ram_mb(gpu_ram_max) if gpu_ram_max is not None else None
+    if gpu_name is not None:
+        gpu_name = _resolve_gpu_name(gpu_name)
     q = _build_offer_query(
         gpu_name=gpu_name, num_gpus=num_gpus,
         gpu_ram_min_mb=ram_min_mb, gpu_ram_max_mb=ram_max_mb,
         dph_total=dph_total, reliability=reliability, geolocation=geolocation,
         type=type, verified=verified, datacenter=datacenter,
     )
-    q["limit"] = {"eq": limit}
+    q["limit"] = int(limit)
     order_val = _parse_order(order)
     if order_val:
         q["order"] = order_val
@@ -345,20 +415,38 @@ def search_offers(
 
 
 @_op(vastai_read)
+def list_gpu_names():
+    """List GPU names accepted by SearchOffers."""
+    return _ok({"gpu_names": _gpu_names()})
+
+
+@_op(vastai_read)
 def search_templates(
-    select_filters: str | None = None,
-    select_cols: str | None = None,
-    order_by: str | None = None,
+    name: str | None = None,
+    image: str | None = None,
+    recommended: bool | None = None,
+    limit: int = 20,
+    order: str | None = None,
 ):
-    """Search templates."""
-    params = {}
-    if select_filters is not None:
-        params["select_filters"] = select_filters
-    if select_cols is not None:
-        params["select_cols"] = select_cols
-    if order_by is not None:
-        params["order_by"] = order_by
-    return _ok(_get_client().get("/api/v0/template/", params=params))
+    """Search instance templates (slimmed).
+
+    name/image match substrings. order: column name, '-column' or 'column-desc'
+    (e.g. '-count_created' for most used)."""
+    filters: dict = {}
+    if name is not None:
+        filters["name"] = name
+    if image is not None:
+        filters["image"] = image
+    if recommended is not None:
+        filters["recommended"] = {"eq": recommended}
+    params = {"select_filters": json.dumps(filters), "limit": int(limit)}
+    order_by = _parse_order_by(order)
+    if order_by:
+        params["order_by"] = json.dumps(order_by)
+    result = _get_client().get("/api/v0/template/", params=params)
+    if isinstance(result, dict) and "templates" in result:
+        result["templates"] = _slim_list(result["templates"], _SLIM_TEMPLATE_FIELDS)
+    return _ok(result)
 
 
 @_op(vastai_read)
@@ -429,21 +517,32 @@ def search_invoices(type: str | None = None, select_filters: str | None = None):
         params["type"] = type
     if select_filters is not None:
         params["select_filters"] = select_filters
-    return _ok(_get_client().get("/api/v0/invoices", params=params))
+    return _ok(_get_client().get("/api/v0/invoices/", params=params))
 
 
 @_op(vastai_read)
 def show_invoices_v1(
-    select_filters: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     latest_first: bool = True,
     limit: int = 20,
+    next_token: str | None = None,
 ):
-    """Get invoices (v1 API). latest_first: sort by most recent."""
-    params: dict = {"limit": limit}
-    if select_filters is not None:
-        params["select_filters"] = select_filters
-    if latest_first:
-        params["latest_first"] = "true"
+    """Get invoices (v1 API, paginated).
+
+    start_date/end_date: 'YYYY-MM-DD' or epoch seconds. Defaults to the last 30 days —
+    the API rejects an unbounded range. next_token: pagination token from a previous call."""
+    end_ts = _parse_date_ts(end_date, "end_date") if end_date is not None \
+        else int(datetime.now(timezone.utc).timestamp())
+    start_ts = _parse_date_ts(start_date, "start_date") if start_date is not None \
+        else end_ts - 30 * 24 * 60 * 60
+    params: dict = {
+        "select_filters": json.dumps({"when": {"gte": start_ts, "lte": end_ts}}),
+        "limit": int(limit),
+        "latest_first": "true" if latest_first else "false",
+    }
+    if next_token is not None:
+        params["after_token"] = next_token
     return _ok(_get_client().get("/api/v1/invoices/", params=params))
 
 
