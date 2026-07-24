@@ -1,6 +1,7 @@
 """Tests for validation: crash on bad input, types, Literal enforcement."""
 
 import json
+import pathlib
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ from vastai_mcp.tools import (
     search_offers,
     search_templates,
     show_invoices_v1,
+    vastai_version,
 )
 from vastai_mcp.server import (
     _all_grouped,
@@ -690,7 +692,56 @@ class TestInvoicesRequest:
 
 # ── client error handling ────────────────────────────────────────────
 
+class TestRepoAscii:
+    def test_sources_are_ascii(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        targets = sorted(root.glob("src/**/*.py")) + sorted(root.glob("tests/**/*.py")) + [
+            root / "README.md", root / "docs" / "index.html",
+        ]
+        offenders = []
+        for path in targets:
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                if any(ord(ch) > 127 for ch in line):
+                    offenders.append(f"{path.relative_to(root)}:{lineno}: {line}")
+        assert not offenders, "non-ASCII found:\n" + "\n".join(offenders)
+
+
+class TestVastaiVersion:
+    def test_service_error_propagates(self, monkeypatch):
+        """A dead API must surface as APIError, not as {"status": "error"}."""
+        class _DeadClient:
+            def get(self, path, **kwargs):
+                raise APIError(500, "GET", path, {"msg": "down"})
+
+        monkeypatch.setattr(tools, "_client", _DeadClient())
+        with pytest.raises(APIError):
+            vastai_version()
+
+    def test_service_ok(self, fake_client):
+        fake_client({"id": 1})
+        assert vastai_version()["service"] == {"status": "ok"}
+
+
 class TestClientHandle:
+    def test_redirect_body_is_text(self):
+        """301 bodies are HTML: keep the text, never let the parser error escape."""
+        r = httpx.Response(
+            301, request=httpx.Request("GET", "https://console.vast.ai/api/v0/invoices"),
+            html="<html>moved</html>",
+        )
+        with pytest.raises(APIError) as excinfo:
+            VastClient()._handle(r)
+        assert "moved" in excinfo.value.body
+
+    def test_json_error_body_is_parsed(self):
+        r = httpx.Response(
+            400, request=httpx.Request("POST", "https://console.vast.ai/api/v0/bundles/"),
+            json={"msg": "limit: Input should be a valid integer"},
+        )
+        with pytest.raises(APIError) as excinfo:
+            VastClient()._handle(r)
+        assert excinfo.value.body["msg"].startswith("limit:")
+
     def test_redirect_raises(self):
         r = httpx.Response(
             301, request=httpx.Request("GET", "https://console.vast.ai/api/v0/invoices"),
