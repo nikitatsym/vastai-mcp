@@ -414,6 +414,11 @@ class TestSearchInvoices:
 
 # -- ShowCharges --------------------
 
+# The shape and paging probes need rows, not a particular window: 90 days back instead of
+# the default 30, so a quiet month on the account does not turn them red.
+CHARGES_PROBE_START = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 90 * 24 * 3600))
+
+
 class TestShowCharges:
     def test_default_range_succeeds(self, live):
         """A range missing either end answers 400 'Must provide both'."""
@@ -423,8 +428,8 @@ class TestShowCharges:
         assert isinstance(result["total"], int)
 
     def test_rows_carry_amounts_and_nested_items(self, live):
-        result = live(tools.show_charges, limit=5)
-        assert result["results"], "account has no charge in the last 30 days"
+        result = live(tools.show_charges, start_date=CHARGES_PROBE_START, limit=5)
+        assert result["results"], "account has no charge in the last 90 days"
         for charge in result["results"]:
             assert {"start", "end", "type", "amount", "items"} <= set(charge)
             assert isinstance(charge["amount"], (int, float))
@@ -435,9 +440,12 @@ class TestShowCharges:
         assert all(charge["type"] == "instance" for charge in result["results"])
 
     def test_paging_moves_forward(self, live):
-        first = live(tools.show_charges, limit=1)
+        first = live(tools.show_charges, start_date=CHARGES_PROBE_START, limit=1)
         assert first["next_token"], "account has fewer than two charges to page through"
-        second = live(tools.show_charges, limit=1, next_token=first["next_token"])
+        second = live(
+            tools.show_charges,
+            start_date=CHARGES_PROBE_START, limit=1, next_token=first["next_token"],
+        )
         assert second["results"][0]["source"] != first["results"][0]["source"]
 
     def test_window_before_the_account_existed_is_empty(self, live):

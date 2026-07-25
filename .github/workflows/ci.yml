@@ -10,11 +10,14 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # A dud host costs ~8 minutes of rental retry before the suite gets a running
+    # instance; 35 covers two duds plus the normal run.
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      # setup-uv stopped publishing major tags in v8: pin the exact release.
+      - uses: astral-sh/setup-uv@v9.0.0
 
       - name: Lint and test
         env:
@@ -43,11 +46,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9.0.0
 
       - name: Compute next version
         id: version
@@ -96,7 +99,7 @@ jobs:
             echo '</body></html>'
           } > _site/simple/vastai-mcp/index.html
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-      - uses: actions/deploy-pages@v4
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/deploy-pages@v5
         id: deployment
