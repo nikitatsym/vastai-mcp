@@ -1,5 +1,7 @@
 import inspect
 import typing
+from collections.abc import Callable
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -10,7 +12,7 @@ mcp = FastMCP("vastai")
 
 # -- State (populated by _register_tools) --------------------
 
-_group_ops: dict[str, dict] = {}  # {group_name: {PascalName: fn}}
+_group_ops: dict[str, dict[str, Any]] = {}  # {group_name: {PascalName: fn}}
 _all_grouped: dict[str, str] = {}  # {PascalName: group_name}
 
 
@@ -18,7 +20,7 @@ def _to_pascal(name: str) -> str:
     return "".join(w.capitalize() for w in name.split("_"))
 
 
-def _parse_bool(val, default: bool) -> bool:
+def _parse_bool(val: Any, default: bool) -> bool:
     if val is None:
         return default
     if isinstance(val, bool):
@@ -28,14 +30,14 @@ def _parse_bool(val, default: bool) -> bool:
     return bool(val)
 
 
-def _is_bool_hint(hint) -> bool:
+def _is_bool_hint(hint: Any) -> bool:
     if hint is bool:
         return True
     args = typing.get_args(hint)
     return bool in args if args else False
 
 
-def _get_literal_values(hint) -> tuple | None:
+def _get_literal_values(hint: Any) -> tuple[Any, ...] | None:
     origin = typing.get_origin(hint)
     if origin is typing.Literal:
         return typing.get_args(hint)
@@ -47,7 +49,7 @@ def _get_literal_values(hint) -> tuple | None:
     return None
 
 
-def _coerce_call(fn, params: dict):
+def _coerce_call(fn: Any, params: dict[str, Any]) -> Any:
     sig = inspect.signature(fn)
     hints = typing.get_type_hints(fn)
 
@@ -60,7 +62,7 @@ def _coerce_call(fn, params: dict):
             f"Valid: {sorted(valid)}"
         )
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     for name, param in sig.parameters.items():
         if name not in params:
             continue
@@ -85,7 +87,7 @@ def _coerce_call(fn, params: dict):
     return fn(**kwargs)
 
 
-def _format_type(hint) -> str:
+def _format_type(hint: Any) -> str:
     origin = typing.get_origin(hint)
     if origin is typing.Literal:
         vals = typing.get_args(hint)
@@ -118,7 +120,7 @@ def _build_help(group_name: str) -> str:
         sig = inspect.signature(fn)
         hints = typing.get_type_hints(fn)
         parts = []
-        for pname, param in sig.parameters.items():
+        for pname in sig.parameters:
             hint = hints.get(pname)
             if hint:
                 parts.append(f"{pname}: {_format_type(hint)}")
@@ -133,7 +135,7 @@ def _build_help(group_name: str) -> str:
     return f"{len(ops)} operations available:\n" + "\n".join(lines)
 
 
-def _dispatch(operation: str, group_name: str, params: dict):
+def _dispatch(operation: str, group_name: str, params: dict[str, Any]) -> Any:
     ops = _group_ops[group_name]
     if operation not in ops:
         if operation in _all_grouped:
@@ -150,8 +152,8 @@ def _dispatch(operation: str, group_name: str, params: dict):
     return _coerce_call(fn, params)
 
 
-def _register_tools():
-    groups: dict[str, tuple] = {}
+def _register_tools() -> None:
+    groups: dict[str, tuple[Any, dict[str, Any]]] = {}
     for name, fn in inspect.getmembers(_tools_module, inspect.isfunction):
         if not hasattr(fn, "_mcp_group"):
             continue
@@ -169,11 +171,11 @@ def _register_tools():
         for pascal_name in ops:
             _all_grouped[pascal_name] = group_name
 
-        def _make_tool(gname, gdoc):
-            def tool_fn(operation: str, params: dict = {}):
+        def _make_tool(gname: str, gdoc: str) -> Callable[[str, dict[str, Any] | None], Any]:
+            def tool_fn(operation: str, params: dict[str, Any] | None = None) -> Any:
                 if operation == "help":
                     return _build_help(gname)
-                return _dispatch(operation, gname, params)
+                return _dispatch(operation, gname, params or {})
 
             tool_fn.__name__ = gname
             tool_fn.__qualname__ = gname

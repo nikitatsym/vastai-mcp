@@ -1,9 +1,9 @@
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.metadata import version
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 
@@ -22,7 +22,7 @@ def _get_client() -> VastClient:
     return _client
 
 
-def _ok(data):
+def _ok(data: Any) -> Any:
     if data is None:
         return {"status": "ok"}
     return data
@@ -53,16 +53,16 @@ _SLIM_INSTANCE_FIELDS = {
 }
 
 
-def _body(**fields) -> dict:
+def _body(**fields: Any) -> dict[str, Any]:
     """Request body without unset fields: the API treats an absent key as 'leave alone'."""
     return {k: v for k, v in fields.items() if v is not None}
 
 
-def _slim(item: dict, fields: set) -> dict:
+def _slim(item: dict[str, Any], fields: set[str]) -> dict[str, Any]:
     return {k: v for k, v in item.items() if k in fields}
 
 
-def _slim_list(items: list, fields: set) -> list:
+def _slim_list(items: list[Any], fields: set[str]) -> list[dict[str, Any]]:
     return [_slim(i, fields) for i in items if isinstance(i, dict)]
 
 
@@ -71,7 +71,7 @@ def _slim_list(items: list, fields: set) -> list:
 def _parse_ram_mb(value: str) -> float:
     """Parse '24GB' or '24564MB' -> MB. Crashes on bare numbers or missing units."""
     if isinstance(value, (int, float)):
-        raise ValueError(
+        raise TypeError(
             f"gpu_ram={value!r} - must include units, e.g. '24GB' or '24564MB'. "
             f"Bare numbers are ambiguous."
         )
@@ -98,11 +98,18 @@ def _ram_mb_ceil(mb: float) -> int:
 
 
 def _build_offer_query(
-    gpu_name=None, num_gpus=None, gpu_ram_min_mb=None, gpu_ram_max_mb=None,
-    dph_total=None, reliability=None, geolocation=None, type=None,
-    verified=None, datacenter=None,
-) -> dict:
-    q: dict = {"verified": {"eq": True}, "external": {"eq": False}, "rentable": {"eq": True}, "rented": {"eq": False}}
+    gpu_name: str | None = None,
+    num_gpus: int | None = None,
+    gpu_ram_min_mb: float | None = None,
+    gpu_ram_max_mb: float | None = None,
+    dph_total: float | None = None,
+    reliability: float | None = None,
+    geolocation: str | None = None,
+    type: Any = None,
+    verified: bool | None = None,
+    datacenter: bool | None = None,
+) -> dict[str, Any]:
+    q: dict[str, Any] = {"verified": {"eq": True}, "external": {"eq": False}, "rentable": {"eq": True}, "rented": {"eq": False}}
     if gpu_name is not None:
         q["gpu_name"] = {"eq": gpu_name}
     if num_gpus is not None:
@@ -129,7 +136,7 @@ def _build_offer_query(
     return q
 
 
-def _parse_order(order: str | None) -> list | None:
+def _parse_order(order: str | None) -> list[list[str]] | None:
     if not order:
         return None
     if order.startswith("-"):
@@ -140,7 +147,7 @@ def _parse_order(order: str | None) -> list | None:
     return [[order, "asc"]]
 
 
-def _parse_order_by(order: str | None) -> list | None:
+def _parse_order_by(order: str | None) -> list[dict[str, str]] | None:
     """Same input as _parse_order, but /template/ wants {"col","dir"} dicts."""
     pairs = _parse_order(order)
     if pairs is None:
@@ -182,7 +189,7 @@ def _resolve_gpu_name(name: str) -> str:
 def _parse_date_ts(value: str | int, field: str) -> int:
     """Parse 'YYYY-MM-DD' or epoch seconds into epoch seconds."""
     if isinstance(value, bool):
-        raise ValueError(f"{field}={value!r} - expected 'YYYY-MM-DD' or epoch seconds")
+        raise TypeError(f"{field}={value!r} - expected 'YYYY-MM-DD' or epoch seconds")
     if isinstance(value, (int, float)):
         return int(value)
     text = str(value).strip()
@@ -275,7 +282,7 @@ def _validate_search_params(params: str) -> str:
 
 # -- Result URL helper --------------------
 
-def _fetch_result(result: dict | None) -> str | dict | None:
+def _fetch_result(result: dict[str, Any] | None) -> Any:
     """Fetch async result from result_url, polling until ready.
 
     vast.ai API is async: PUT triggers log/command collection, result
@@ -343,7 +350,7 @@ vastai_delete = Group(
 # -- ROOT --------------------
 
 @_op(ROOT)
-def vastai_version():
+def vastai_version() -> Any:
     """Get the Vast.ai MCP server version and service status.
 
     An unreachable API surfaces as APIError, not as a status field."""
@@ -354,25 +361,25 @@ def vastai_version():
 # -- vastai_read --------------------
 
 @_op(vastai_read)
-def show_user():
+def show_user() -> Any:
     """Get current user info."""
     return _get_client().get("/api/v0/users/current/")
 
 
 @_op(vastai_read)
-def list_api_keys():
+def list_api_keys() -> Any:
     """List API keys."""
     return _get_client().get("/api/v0/auth/apikeys/")
 
 
 @_op(vastai_read)
-def list_ssh_keys():
+def list_ssh_keys() -> Any:
     """List SSH keys."""
     return _get_client().get("/api/v0/ssh/")
 
 
 @_op(vastai_read)
-def list_secrets():
+def list_secrets() -> Any:
     """List secrets."""
     return _get_client().get("/api/v0/secrets/")
 
@@ -391,7 +398,7 @@ def search_offers(
     verified: bool | None = None,
     datacenter: bool | None = None,
     order: str | None = None,
-):
+) -> Any:
     """Search GPU offers.
 
     gpu_name: either spelling works ('RTX 4090' or 'RTX_4090'); see ListGpuNames for the catalog.
@@ -418,7 +425,7 @@ def search_offers(
 
 
 @_op(vastai_read)
-def list_gpu_names():
+def list_gpu_names() -> Any:
     """List GPU names accepted by SearchOffers."""
     return _ok({"gpu_names": _gpu_names()})
 
@@ -430,19 +437,19 @@ def search_templates(
     recommended: bool | None = None,
     limit: int = 20,
     order: str | None = None,
-):
+) -> Any:
     """Search instance templates (slimmed).
 
     name/image match substrings. order: column name, '-column' or 'column-desc'
     (e.g. '-count_created' for most used)."""
-    filters: dict = {}
+    filters: dict[str, Any] = {}
     if name is not None:
         filters["name"] = name
     if image is not None:
         filters["image"] = image
     if recommended is not None:
         filters["recommended"] = {"eq": recommended}
-    params = {"select_filters": json.dumps(filters), "limit": int(limit)}
+    params: dict[str, Any] = {"select_filters": json.dumps(filters), "limit": int(limit)}
     order_by = _parse_order_by(order)
     if order_by:
         params["order_by"] = json.dumps(order_by)
@@ -453,16 +460,16 @@ def search_templates(
 
 
 @_op(vastai_read)
-def search_benchmarks(query: str | None = None):
+def search_benchmarks(query: str | None = None) -> Any:
     """Search benchmarks."""
-    params = {}
+    params: dict[str, str] = {}
     if query is not None:
         params["q"] = query
     return _ok(_get_client().get("/api/v0/benchmarks/", params=params))
 
 
 @_op(vastai_read)
-def list_instances():
+def list_instances() -> Any:
     """List all rented instances (slimmed)."""
     result = _get_client().get("/api/v0/instances/")
     if isinstance(result, dict) and "instances" in result:
@@ -471,13 +478,13 @@ def list_instances():
 
 
 @_op(vastai_read)
-def show_instance(id: int):
+def show_instance(id: int) -> Any:
     """Get full instance details by ID."""
     return _ok(_get_client().get(f"/api/v0/instances/{id}/"))
 
 
 @_op(vastai_read)
-def show_instance_ssh_keys(instance_id: int):
+def show_instance_ssh_keys(instance_id: int) -> Any:
     """Get SSH keys attached to an instance."""
     return _ok(_get_client().get(f"/api/v0/instances/{instance_id}/ssh/"))
 
@@ -488,13 +495,13 @@ def show_logs(
     tail: int = 500,
     filter: str | None = None,
     daemon_logs: bool = False,
-):
+) -> Any:
     """Get instance logs (async - polls S3 up to ~9s for result).
 
     tail: number of lines (0=all, default 500). filter: regex grep.
     daemon_logs: if true, fetch daemon/system logs instead of user logs.
     Instance must be running - loading instances have no logs yet."""
-    body: dict = {"tail": str(tail)}
+    body: dict[str, Any] = {"tail": str(tail)}
     if daemon_logs:
         body["daemon_logs"] = True
     result = _get_client().put(f"/api/v0/instances/request_logs/{id}/", json=body)
@@ -507,15 +514,15 @@ def show_logs(
 
 
 @_op(vastai_read)
-def show_deposit(id: int):
+def show_deposit(id: int) -> Any:
     """Get instance deposit/balance info."""
     return _ok(_get_client().get(f"/api/v0/instances/balance/{id}/"))
 
 
 @_op(vastai_read)
-def search_invoices(type: str | None = None, select_filters: str | None = None):
+def search_invoices(type: str | None = None, select_filters: str | None = None) -> Any:
     """Search invoices."""
-    params = {}
+    params: dict[str, str] = {}
     if type is not None:
         params["type"] = type
     if select_filters is not None:
@@ -530,16 +537,16 @@ def show_invoices_v1(
     latest_first: bool = True,
     limit: int = 20,
     next_token: str | None = None,
-):
+) -> Any:
     """Get invoices (v1 API, paginated).
 
     start_date/end_date: 'YYYY-MM-DD' or epoch seconds. Defaults to the last 30 days -
     the API rejects an unbounded range. next_token: pagination token from a previous call."""
     end_ts = _parse_date_ts(end_date, "end_date") if end_date is not None \
-        else int(datetime.now(timezone.utc).timestamp())
+        else int(datetime.now(UTC).timestamp())
     start_ts = _parse_date_ts(start_date, "start_date") if start_date is not None \
         else end_ts - 30 * 24 * 60 * 60
-    params: dict = {
+    params: dict[str, Any] = {
         "select_filters": json.dumps({"when": {"gte": start_ts, "lte": end_ts}}),
         "limit": int(limit),
         "latest_first": "true" if latest_first else "false",
@@ -550,43 +557,43 @@ def show_invoices_v1(
 
 
 @_op(vastai_read)
-def list_volumes():
+def list_volumes() -> Any:
     """List volumes."""
     return _ok(_get_client().get("/api/v0/volumes/"))
 
 
 @_op(vastai_read)
-def search_volumes(q: str | None = None, limit: int = 20):
+def search_volumes(q: str | None = None, limit: int = 20) -> Any:
     """Search volumes."""
-    body: dict = {"limit": limit}
+    body: dict[str, Any] = {"limit": limit}
     if q is not None:
         body["q"] = q
     return _ok(_get_client().post("/api/v0/volumes/search/", json=body))
 
 
 @_op(vastai_read)
-def search_network_volumes(q: str | None = None):
+def search_network_volumes(q: str | None = None) -> Any:
     """Search network volumes."""
-    body: dict = {}
+    body: dict[str, Any] = {}
     if q is not None:
         body["q"] = q
     return _ok(_get_client().post("/api/v0/network_volumes/search/", json=body))
 
 
 @_op(vastai_read)
-def list_endpoints():
+def list_endpoints() -> Any:
     """List serverless endpoints."""
     return _ok(_get_client().get("/api/v0/endptjobs/"))
 
 
 @_op(vastai_read)
-def list_workergroups():
+def list_workergroups() -> Any:
     """List worker groups."""
     return _ok(_get_client().get("/api/v0/workergroups/"))
 
 
 @_op(vastai_read)
-def get_endpoint_logs(endpoint: str, tail: int = 500):
+def get_endpoint_logs(endpoint: str, tail: int = 500) -> Any:
     """Get endpoint logs. tail: characters per log level (default 500). Increase for more history."""
     return _ok(_get_client().run_post(
         "/get_endpoint_logs/", json={"endpoint": endpoint, "tail": tail},
@@ -594,13 +601,13 @@ def get_endpoint_logs(endpoint: str, tail: int = 500):
 
 
 @_op(vastai_read)
-def get_endpoint_workers(id: int):
+def get_endpoint_workers(id: int) -> Any:
     """Get endpoint workers."""
     return _ok(_get_client().run_post("/get_endpoint_workers/", json={"id": id}))
 
 
 @_op(vastai_read)
-def get_workergroup_logs(id: int, tail: int = 500):
+def get_workergroup_logs(id: int, tail: int = 500) -> Any:
     """Get worker group logs. tail: characters per log level (default 500). Increase for more history."""
     return _ok(_get_client().run_post(
         "/get_workergroup_logs/", json={"id": id, "tail": tail},
@@ -608,7 +615,7 @@ def get_workergroup_logs(id: int, tail: int = 500):
 
 
 @_op(vastai_read)
-def get_workergroup_workers(id: int):
+def get_workergroup_workers(id: int) -> Any:
     """Get worker group workers."""
     return _ok(_get_client().run_post("/get_workergroup_workers/", json={"id": id}))
 
@@ -616,34 +623,34 @@ def get_workergroup_workers(id: int):
 # -- vastai_write --------------------
 
 @_op(vastai_write)
-def create_api_key(name: str, permissions: str | None = None):
+def create_api_key(name: str, permissions: str | None = None) -> Any:
     """Create an API key."""
-    body: dict = {"name": name}
+    body: dict[str, str] = {"name": name}
     if permissions is not None:
         body["permissions"] = permissions
     return _ok(_get_client().post("/api/v0/auth/apikeys/", json=body))
 
 
 @_op(vastai_write)
-def create_ssh_key(ssh_key: str):
+def create_ssh_key(ssh_key: str) -> Any:
     """Add an SSH public key."""
     return _ok(_get_client().post("/api/v0/ssh/", json={"ssh_key": ssh_key}))
 
 
 @_op(vastai_write)
-def update_ssh_key(id: int, ssh_key: str):
+def update_ssh_key(id: int, ssh_key: str) -> Any:
     """Update an SSH key."""
     return _ok(_get_client().put(f"/api/v0/ssh/{id}/", json={"ssh_key": ssh_key}))
 
 
 @_op(vastai_write)
-def create_secret(key: str, value: str):
+def create_secret(key: str, value: str) -> Any:
     """Create a secret."""
     return _ok(_get_client().post("/api/v0/secrets/", json={"key": key, "value": value}))
 
 
 @_op(vastai_write)
-def update_secret(key: str, value: str):
+def update_secret(key: str, value: str) -> Any:
     """Update a secret."""
     return _ok(_get_client().put("/api/v0/secrets/", json={"key": key, "value": value}))
 
@@ -655,7 +662,7 @@ def create_instance(
     disk: float,
     label: str | None = None,
     onstart: str | None = None,
-    env: dict | None = None,
+    env: dict[str, str] | None = None,
     runtype: str | None = None,
     price: float | None = None,
     args_str: str | None = None,
@@ -663,9 +670,9 @@ def create_instance(
     jupyter_dir: str | None = None,
     python_utf8: bool | None = None,
     lang_utf8: bool | None = None,
-):
+) -> Any:
     """Rent a GPU instance from an offer. id = offer ID. env is a dict (e.g. {'VAR': 'val'}), unlike templates where env is a Docker flags string."""
-    body: dict = {"client_id": "me", "image": image, "disk": disk}
+    body: dict[str, Any] = {"client_id": "me", "image": image, "disk": disk}
     if label is not None:
         body["label"] = label
     if onstart is not None:
@@ -690,9 +697,9 @@ def create_instance(
 
 
 @_op(vastai_write)
-def manage_instance(id: int, state: Literal["running", "stopped"] | None = None, label: str | None = None):
+def manage_instance(id: int, state: Literal["running", "stopped"] | None = None, label: str | None = None) -> Any:
     """Start, stop, or relabel an instance."""
-    body: dict = {}
+    body: dict[str, str | None] = {}
     if state is not None:
         body["state"] = state
     if label is not None:
@@ -701,7 +708,7 @@ def manage_instance(id: int, state: Literal["running", "stopped"] | None = None,
 
 
 @_op(vastai_write)
-def change_bid(id: int, price: float):
+def change_bid(id: int, price: float) -> Any:
     """Change bid price for an interruptible instance."""
     return _ok(_get_client().put(
         f"/api/v0/instances/bid_price/{id}/",
@@ -710,7 +717,7 @@ def change_bid(id: int, price: float):
 
 
 @_op(vastai_write)
-def prepay_instance(id: int, amount: float):
+def prepay_instance(id: int, amount: float) -> Any:
     """Prepay balance for an instance."""
     return _ok(_get_client().put(
         f"/api/v0/instances/prepay/{id}/", json={"amount": amount},
@@ -718,7 +725,7 @@ def prepay_instance(id: int, amount: float):
 
 
 @_op(vastai_write)
-def attach_ssh_key(id: int, ssh_key: str):
+def attach_ssh_key(id: int, ssh_key: str) -> Any:
     """Attach an SSH key to an instance."""
     return _ok(_get_client().post(
         f"/api/v0/instances/{id}/ssh/", json={"ssh_key": ssh_key},
@@ -740,7 +747,7 @@ def create_template(
     use_ssh: bool | None = None,
     private: bool | None = None,
     args_str: str | None = None,
-):
+) -> Any:
     """Create an instance template.
 
     env: Docker flags STRING, not a dict (e.g. '-e VAR=val -e FOO=bar').
@@ -750,7 +757,7 @@ def create_template(
     """
     if env is not None:
         _validate_env(env)
-    body: dict = {"name": name, "image": image}
+    body: dict[str, Any] = {"name": name, "image": image}
     if tag is not None:
         body["tag"] = tag
     if env is not None:
@@ -784,14 +791,14 @@ def edit_template(
     env: str | None = None,
     desc: str | None = None,
     recommended_disk_space: float | None = None,
-):
+) -> Any:
     """Edit an existing template.
 
     env: Docker flags STRING (e.g. '-e VAR=val'). Same validation as create_template.
     """
     if env is not None:
         _validate_env(env)
-    body: dict = {"hash_id": hash_id}
+    body: dict[str, Any] = {"hash_id": hash_id}
     if name is not None:
         body["name"] = name
     if image is not None:
@@ -806,15 +813,15 @@ def edit_template(
 
 
 @_op(vastai_write)
-def rent_volume(id: int, size: float):
+def rent_volume(id: int, size: float) -> Any:
     """Rent a volume."""
     return _ok(_get_client().put("/api/v0/volumes/", json={"id": id, "size": size}))
 
 
 @_op(vastai_write)
-def create_network_volume(id: int, size: float, name: str | None = None):
+def create_network_volume(id: int, size: float, name: str | None = None) -> Any:
     """Create a network volume."""
-    body: dict = {"id": id, "size": size}
+    body: dict[str, Any] = {"id": id, "size": size}
     if name is not None:
         body["name"] = name
     return _ok(_get_client().put("/api/v0/network_volume/", json=body))
@@ -828,7 +835,7 @@ def create_endpoint(
     cold_mult: float | None = None,
     cold_workers: int | None = None,
     max_workers: int | None = None,
-):
+) -> Any:
     """Create a serverless endpoint."""
     body = _body(
         endpoint_name=endpoint_name, min_load=min_load, target_util=target_util,
@@ -846,7 +853,7 @@ def update_endpoint(
     cold_mult: float | None = None,
     cold_workers: int | None = None,
     max_workers: int | None = None,
-):
+) -> Any:
     """Update a serverless endpoint."""
     body = _body(
         endpoint_name=endpoint_name, min_load=min_load, target_util=target_util,
@@ -870,7 +877,7 @@ def create_workergroup(
     max_workers: int | None = None,
     test_workers: int | None = None,
     gpu_ram: str | None = None,
-):
+) -> Any:
     """Create a worker group for a serverless endpoint.
 
     gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
@@ -912,7 +919,7 @@ def update_workergroup(
     gpu_ram: str | None = None,
     endpoint_name: str | None = None,
     endpoint_id: int | None = None,
-):
+) -> Any:
     """Update a worker group.
 
     gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
@@ -938,19 +945,19 @@ def update_workergroup(
 # -- vastai_execute --------------------
 
 @_op(vastai_execute)
-def reboot_instance(id: int):
+def reboot_instance(id: int) -> Any:
     """Reboot an instance (docker stop/start, keeps GPU)."""
     return _ok(_get_client().put(f"/api/v0/instances/reboot/{id}/", json={}))
 
 
 @_op(vastai_execute)
-def recycle_instance(id: int):
+def recycle_instance(id: int) -> Any:
     """Recycle an instance (destroy+recreate, re-pulls image)."""
     return _ok(_get_client().put(f"/api/v0/instances/recycle/{id}/", json={}))
 
 
 @_op(vastai_execute)
-def execute_command(id: int, command: str):
+def execute_command(id: int, command: str) -> Any:
     """Execute a command on an instance (async - polls S3 up to ~9s for result)."""
     result = _get_client().put(
         f"/api/v0/instances/command/{id}/", json={"command": command},
@@ -959,7 +966,7 @@ def execute_command(id: int, command: str):
 
 
 @_op(vastai_execute)
-def copy_data(src_id: int, dst_id: int, src_path: str, dst_path: str):
+def copy_data(src_id: int, dst_id: int, src_path: str, dst_path: str) -> Any:
     """Copy data between instances."""
     return _ok(_get_client().put("/api/v0/commands/copy_direct/", json={
         "src_id": src_id, "dst_id": dst_id,
@@ -974,9 +981,9 @@ def cloud_copy(
     dst: str,
     selected: str | None = None,
     transfer: str | None = None,
-):
+) -> Any:
     """Cloud copy (rclone) data to/from an instance."""
-    body: dict = {"instance_id": instance_id, "src": src, "dst": dst}
+    body: dict[str, Any] = {"instance_id": instance_id, "src": src, "dst": dst}
     if selected is not None:
         body["selected"] = selected
     if transfer is not None:
@@ -985,9 +992,9 @@ def cloud_copy(
 
 
 @_op(vastai_execute)
-def route_request(endpoint: str, cost: float | None = None):
+def route_request(endpoint: str, cost: float | None = None) -> Any:
     """Route a request to a serverless endpoint. endpoint: endpoint name (string). Returns worker URL if available."""
-    body: dict = {"endpoint": endpoint}
+    body: dict[str, Any] = {"endpoint": endpoint}
     if cost is not None:
         body["cost"] = cost
     return _ok(_get_client().run_post("/route/", json=body))
@@ -996,37 +1003,37 @@ def route_request(endpoint: str, cost: float | None = None):
 # -- vastai_delete --------------------
 
 @_op(vastai_delete)
-def destroy_instance(id: int):
+def destroy_instance(id: int) -> Any:
     """Destroy an instance. Irreversible."""
     return _ok(_get_client().delete(f"/api/v0/instances/{id}/"))
 
 
 @_op(vastai_delete)
-def delete_api_key(id: int):
+def delete_api_key(id: int) -> Any:
     """Delete an API key."""
     return _ok(_get_client().delete(f"/api/v0/auth/apikeys/{id}/"))
 
 
 @_op(vastai_delete)
-def delete_ssh_key(id: int):
+def delete_ssh_key(id: int) -> Any:
     """Delete an SSH key."""
     return _ok(_get_client().delete(f"/api/v0/ssh/{id}/"))
 
 
 @_op(vastai_delete)
-def detach_ssh_key(id: int, ssh_key_id: int):
+def detach_ssh_key(id: int, ssh_key_id: int) -> Any:
     """Detach an SSH key from an instance."""
     return _ok(_get_client().delete(f"/api/v0/instances/{id}/ssh/{ssh_key_id}/"))
 
 
 @_op(vastai_delete)
-def delete_secret(key: str):
+def delete_secret(key: str) -> Any:
     """Delete a secret by key name."""
     return _ok(_get_client().delete("/api/v0/secrets/", json={"key": key}))
 
 
 @_op(vastai_delete)
-def delete_template(template_id: int):
+def delete_template(template_id: int) -> Any:
     """Delete a template."""
     return _ok(_get_client().delete(
         "/api/v0/template/", json={"template_id": template_id},
@@ -1034,31 +1041,31 @@ def delete_template(template_id: int):
 
 
 @_op(vastai_delete)
-def delete_volume(id: int):
+def delete_volume(id: int) -> Any:
     """Delete a volume."""
     return _ok(_get_client().delete("/api/v0/volumes/", json={"id": id}))
 
 
 @_op(vastai_delete)
-def unlist_volume(id: int):
+def unlist_volume(id: int) -> Any:
     """Unlist a volume from marketplace."""
     return _ok(_get_client().post("/api/v0/volumes/unlist/", json={"id": id}))
 
 
 @_op(vastai_delete)
-def delete_endpoint(id: int):
+def delete_endpoint(id: int) -> Any:
     """Delete a serverless endpoint."""
     return _ok(_get_client().delete(f"/api/v0/endptjobs/{id}/"))
 
 
 @_op(vastai_delete)
-def delete_workergroup(id: int):
+def delete_workergroup(id: int) -> Any:
     """Delete a worker group."""
     return _ok(_get_client().delete(f"/api/v0/workergroups/{id}/"))
 
 
 @_op(vastai_delete)
-def cancel_copy(dst_id: int):
+def cancel_copy(dst_id: int) -> Any:
     """Cancel a direct copy operation."""
     return _ok(_get_client().delete(
         "/api/v0/commands/copy_direct/", json={"dst_id": dst_id},
@@ -1066,7 +1073,7 @@ def cancel_copy(dst_id: int):
 
 
 @_op(vastai_delete)
-def cancel_sync(dst_id: int):
+def cancel_sync(dst_id: int) -> Any:
     """Cancel a cloud sync (rclone) operation."""
     return _ok(_get_client().delete(
         "/api/v0/commands/rclone/", json={"dst_id": dst_id},

@@ -1,10 +1,12 @@
+from typing import Any
+
 import httpx
 
 from .config import get_settings
 
 
 class APIError(Exception):
-    def __init__(self, status: int, method: str, path: str, body):
+    def __init__(self, status: int, method: str, path: str, body: Any) -> None:
         self.status = status
         self.method = method
         self.path = path
@@ -34,7 +36,7 @@ class VastClient:
             timeout=30.0,
         )
 
-    def _handle(self, r: httpx.Response):
+    def _handle(self, r: httpx.Response) -> Any:
         # 3xx too: redirects are not followed, so an unexpected one means a wrong path,
         # and its body is HTML rather than the JSON the caller expects.
         if r.status_code >= 300:
@@ -45,23 +47,23 @@ class VastClient:
             return None
         return r.json()
 
-    def get(self, path: str, **kwargs):
+    def get(self, path: str, **kwargs: Any) -> Any:
         return self._handle(self._http.get(path, **kwargs))
 
-    def post(self, path: str, **kwargs):
+    def post(self, path: str, **kwargs: Any) -> Any:
         return self._handle(self._http.post(path, **kwargs))
 
-    def put(self, path: str, **kwargs):
+    def put(self, path: str, **kwargs: Any) -> Any:
         return self._handle(self._http.put(path, **kwargs))
 
-    def delete(self, path: str, **kwargs):
+    def delete(self, path: str, **kwargs: Any) -> Any:
         return self._handle(self._http.request("DELETE", path, **kwargs))
 
-    def run_post(self, path: str, **kwargs):
+    def run_post(self, path: str, **kwargs: Any) -> Any:
         """POST to run.vast.ai (serverless runtime API)."""
         return self._handle(self._run_http.post(path, **kwargs))
 
-    def run_get(self, path: str, **kwargs):
+    def run_get(self, path: str, **kwargs: Any) -> Any:
         """GET from run.vast.ai (serverless runtime API)."""
         return self._handle(self._run_http.get(path, **kwargs))
 

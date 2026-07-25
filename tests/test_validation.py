@@ -9,6 +9,16 @@ import pytest
 
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
+from vastai_mcp.server import (
+    _all_grouped,
+    _build_help,
+    _coerce_call,
+    _dispatch,
+    _format_type,
+    _get_literal_values,
+    _group_ops,
+    _to_pascal,
+)
 from vastai_mcp.tools import (
     _build_offer_query,
     _parse_date_ts,
@@ -26,17 +36,6 @@ from vastai_mcp.tools import (
     show_invoices_v1,
     vastai_version,
 )
-from vastai_mcp.server import (
-    _all_grouped,
-    _build_help,
-    _coerce_call,
-    _dispatch,
-    _format_type,
-    _get_literal_values,
-    _group_ops,
-    _to_pascal,
-)
-
 
 # -- _parse_ram_mb --------------------
 
@@ -54,11 +53,11 @@ class TestParseRamMb:
         assert _parse_ram_mb("1.5GB") == 1.5 * 1024
 
     def test_bare_int_crashes(self):
-        with pytest.raises(ValueError, match="must include units"):
+        with pytest.raises(TypeError, match="must include units"):
             _parse_ram_mb(24)
 
     def test_bare_float_crashes(self):
-        with pytest.raises(ValueError, match="must include units"):
+        with pytest.raises(TypeError, match="must include units"):
             _parse_ram_mb(24.0)
 
     def test_bare_string_crashes(self):
@@ -297,7 +296,7 @@ class TestParseRamMbEdge:
 
     def test_bool_true_crashes(self):
         """Agent might coerce True from JSON."""
-        with pytest.raises(ValueError, match="must include units"):
+        with pytest.raises(TypeError, match="must include units"):
             _parse_ram_mb(True)
 
     def test_list_crashes(self):
