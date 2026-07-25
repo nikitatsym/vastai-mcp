@@ -39,7 +39,7 @@ def _is_bool_hint(hint: Any) -> bool:
 
 
 def _is_union(origin: Any) -> bool:
-    # Before 3.14 `str | None` has origin types.UnionType; typing.Union only since 3.14.
+    # Before 3.14 the origin of `str | None` is types.UnionType, not typing.Union.
     return origin is typing.Union or origin is types.UnionType
 
 

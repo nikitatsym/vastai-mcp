@@ -55,7 +55,9 @@ def sweep() -> int:
     """Destroy every instance left behind by e2e runs."""
     instances = list_instances()["instances"]
     doomed = [
-        i["id"] for i in instances if str(i.get("label") or "").startswith(SWEEP_LABEL_PREFIX)
+        inst["id"]
+        for inst in instances
+        if str(inst.get("label") or "").startswith(SWEEP_LABEL_PREFIX)
     ]
     for instance_id in doomed:
         destroy_instance(instance_id)

@@ -664,9 +664,15 @@ class TestInvoicesRequest:
 class TestRepoAscii:
     def test_sources_are_ascii(self):
         root = pathlib.Path(__file__).resolve().parents[1]
-        targets = sorted(root.glob("src/**/*.py")) + sorted(root.glob("tests/**/*.py")) + [
-            root / "README.md", root / "docs" / "index.html",
-        ]
+        targets = (
+            sorted(root.glob("src/**/*.py"))
+            + sorted(root.glob("tests/**/*.py"))
+            + sorted(root.glob(".github/workflows/*.yml"))
+            + [
+                root / "README.md", root / "docs" / "index.html",
+                root / "dev.py", root / ".githooks" / "pre-commit",
+            ]
+        )
         offenders = []
         for path in targets:
             for lineno, line in enumerate(path.read_text().splitlines(), 1):
