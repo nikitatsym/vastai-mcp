@@ -2,6 +2,7 @@ import json
 import re
 import time
 from datetime import datetime, timezone
+from importlib.metadata import version
 from typing import Literal
 
 import httpx
@@ -9,7 +10,7 @@ import httpx
 from .client import VastClient
 from .registry import ROOT, Group, _op
 
-# ── Client singleton ──────────────────────────────────────────────────
+# -- Client singleton --------------------
 
 _client: VastClient | None = None
 
@@ -27,7 +28,7 @@ def _ok(data):
     return data
 
 
-# ── Slim helpers ──────────────────────────────────────────────────────
+# -- Slim helpers --------------------
 
 _SLIM_OFFER_FIELDS = {
     "id", "gpu_name", "num_gpus", "gpu_ram", "gpu_total_ram",
@@ -52,6 +53,11 @@ _SLIM_INSTANCE_FIELDS = {
 }
 
 
+def _body(**fields) -> dict:
+    """Request body without unset fields: the API treats an absent key as 'leave alone'."""
+    return {k: v for k, v in fields.items() if v is not None}
+
+
 def _slim(item: dict, fields: set) -> dict:
     return {k: v for k, v in item.items() if k in fields}
 
@@ -60,19 +66,19 @@ def _slim_list(items: list, fields: set) -> list:
     return [_slim(i, fields) for i in items if isinstance(i, dict)]
 
 
-# ── Search helpers ────────────────────────────────────────────────────
+# -- Search helpers --------------------
 
 def _parse_ram_mb(value: str) -> float:
-    """Parse '24GB' or '24564MB' → MB. Crashes on bare numbers or missing units."""
+    """Parse '24GB' or '24564MB' -> MB. Crashes on bare numbers or missing units."""
     if isinstance(value, (int, float)):
         raise ValueError(
-            f"gpu_ram={value!r} — must include units, e.g. '24GB' or '24564MB'. "
+            f"gpu_ram={value!r} - must include units, e.g. '24GB' or '24564MB'. "
             f"Bare numbers are ambiguous."
         )
     m = _GPU_RAM_RE.match(str(value))
     if not m:
         raise ValueError(
-            f"gpu_ram={value!r} — must include units, e.g. '24GB' or '24564MB'"
+            f"gpu_ram={value!r} - must include units, e.g. '24GB' or '24564MB'"
         )
     num = float(m.group(1))
     unit = m.group(2).upper()
@@ -82,12 +88,12 @@ def _parse_ram_mb(value: str) -> float:
 
 
 def _ram_mb_floor(mb: float) -> int:
-    """3% below nominal — GPUs report slightly less (24GB = 24564 not 24576 MB)."""
+    """3% below nominal - GPUs report slightly less (24GB = 24564 not 24576 MB)."""
     return round(mb * 0.97)
 
 
 def _ram_mb_ceil(mb: float) -> int:
-    """3% above nominal — GPUs report slightly less (24GB = 24564 not 24576 MB)."""
+    """3% above nominal - GPUs report slightly less (24GB = 24564 not 24576 MB)."""
     return round(mb * 1.03)
 
 
@@ -176,7 +182,7 @@ def _resolve_gpu_name(name: str) -> str:
 def _parse_date_ts(value: str | int, field: str) -> int:
     """Parse 'YYYY-MM-DD' or epoch seconds into epoch seconds."""
     if isinstance(value, bool):
-        raise ValueError(f"{field}={value!r} — expected 'YYYY-MM-DD' or epoch seconds")
+        raise ValueError(f"{field}={value!r} - expected 'YYYY-MM-DD' or epoch seconds")
     if isinstance(value, (int, float)):
         return int(value)
     text = str(value).strip()
@@ -186,11 +192,11 @@ def _parse_date_ts(value: str | int, field: str) -> int:
         return int(datetime.strptime(text + "+0000", "%Y-%m-%d%z").timestamp())
     except ValueError:
         raise ValueError(
-            f"{field}={value!r} — expected 'YYYY-MM-DD' or epoch seconds"
+            f"{field}={value!r} - expected 'YYYY-MM-DD' or epoch seconds"
         ) from None
 
 
-# ── Validation helpers ────────────────────────────────────────────────
+# -- Validation helpers --------------------
 
 _GPU_RAM_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(GB|MB)\s*$", re.IGNORECASE)
 
@@ -200,7 +206,7 @@ def _parse_gpu_ram(value: str, target_unit: str) -> float:
     m = _GPU_RAM_RE.match(value)
     if not m:
         raise ValueError(
-            f"gpu_ram={value!r} — must include units, e.g. '48GB' or '49152MB'"
+            f"gpu_ram={value!r} - must include units, e.g. '48GB' or '49152MB'"
         )
     num = float(m.group(1))
     unit = m.group(2).upper()
@@ -217,7 +223,7 @@ def _validate_env(env: str) -> None:
     errors = []
     if "-p " in env or env.endswith("-p"):
         errors.append(
-            "'-p PORT:PORT' in env does NOT create port mappings — "
+            "'-p PORT:PORT' in env does NOT create port mappings - "
             "vast.ai parses it as a broken env var. "
             "Ports are mapped automatically for serverless, or use direct_port_count for instances"
         )
@@ -226,7 +232,7 @@ def _validate_env(env: str) -> None:
         key_val, orphan = m.group(1), m.group(2)
         if not orphan.startswith("-"):
             errors.append(
-                f"'{key_val}' is followed by '{orphan}' which will be lost — "
+                f"'{key_val}' is followed by '{orphan}' which will be lost - "
                 f"vast.ai splits on spaces. Use '-e {key_val} {orphan}' won't work either. "
                 f"Combine into the value without spaces or use a different approach"
             )
@@ -241,9 +247,9 @@ def _validate_search_params(params: str) -> str:
     """Validate and normalize search_params. Returns cleaned string."""
     errors = []
     if "rentable" not in params:
-        errors.append("missing 'rentable=true' — engine will try to rent unrentable machines")
+        errors.append("missing 'rentable=true' - engine will try to rent unrentable machines")
     if "rented" not in params:
-        errors.append("missing 'rented=false' — engine will try to rent already-rented machines")
+        errors.append("missing 'rented=false' - engine will try to rent already-rented machines")
     # gpu_ram in search_params is interpreted as GB by the API.
     # Require explicit units to prevent e.g. gpu_ram>=10000 (=10TB) mistakes.
     ram_m = _SEARCH_GPU_RAM_RE.search(params)
@@ -252,12 +258,12 @@ def _validate_search_params(params: str) -> str:
         if not _GPU_RAM_RE.match(val):
             errors.append(
                 f"gpu_ram value '{val}' must include units (e.g. '12GB' or '12288MB'). "
-                f"API interprets bare numbers as GB — gpu_ram>=10000 means 10TB"
+                f"API interprets bare numbers as GB - gpu_ram>=10000 means 10TB"
             )
     if errors:
         raise ValueError(
             f"search_params={params!r} is invalid: {'; '.join(errors)}. "
-            f"API default is 'verified=true rentable=true rented=false' — your params REPLACE it entirely."
+            f"API default is 'verified=true rentable=true rented=false' - your params REPLACE it entirely."
         )
     # Convert gpu_ram units to bare GB number for API
     if ram_m:
@@ -267,13 +273,13 @@ def _validate_search_params(params: str) -> str:
 
 
 
-# ── Result URL helper ─────────────────────────────────────────────────
+# -- Result URL helper --------------------
 
 def _fetch_result(result: dict | None) -> str | dict | None:
     """Fetch async result from result_url, polling until ready.
 
     vast.ai API is async: PUT triggers log/command collection, result
-    appears on S3 after a delay.  Official CLI polls 30×0.3s — we match that.
+    appears on S3 after a delay.  Official CLI polls 30x0.3s - we match that.
     """
     if not isinstance(result, dict):
         return result
@@ -295,7 +301,7 @@ def _fetch_result(result: dict | None) -> str | dict | None:
     return result.get("msg", f"Logs not available (result_url returned {r.status_code})")
 
 
-# ── Groups ────────────────────────────────────────────────────────────
+# -- Groups --------------------
 
 vastai_read = Group(
     "vastai_read",
@@ -334,21 +340,18 @@ vastai_delete = Group(
 )
 
 
-# ── ROOT ──────────────────────────────────────────────────────────────
+# -- ROOT --------------------
 
 @_op(ROOT)
 def vastai_version():
-    """Get the Vast.ai MCP server version and service status."""
-    from importlib.metadata import version
-    try:
-        _get_client().get("/api/v0/users/current/")
-        service = {"status": "ok"}
-    except Exception:
-        service = {"status": "error"}
-    return {"mcp": version("vastai-mcp"), "service": service}
+    """Get the Vast.ai MCP server version and service status.
+
+    An unreachable API surfaces as APIError, not as a status field."""
+    _get_client().get("/api/v0/users/current/")
+    return {"mcp": version("vastai-mcp"), "service": {"status": "ok"}}
 
 
-# ── vastai_read ───────────────────────────────────────────────────────
+# -- vastai_read --------------------
 
 @_op(vastai_read)
 def show_user():
@@ -486,11 +489,11 @@ def show_logs(
     filter: str | None = None,
     daemon_logs: bool = False,
 ):
-    """Get instance logs (async — polls S3 up to ~9s for result).
+    """Get instance logs (async - polls S3 up to ~9s for result).
 
     tail: number of lines (0=all, default 500). filter: regex grep.
     daemon_logs: if true, fetch daemon/system logs instead of user logs.
-    Instance must be running — loading instances have no logs yet."""
+    Instance must be running - loading instances have no logs yet."""
     body: dict = {"tail": str(tail)}
     if daemon_logs:
         body["daemon_logs"] = True
@@ -530,7 +533,7 @@ def show_invoices_v1(
 ):
     """Get invoices (v1 API, paginated).
 
-    start_date/end_date: 'YYYY-MM-DD' or epoch seconds. Defaults to the last 30 days —
+    start_date/end_date: 'YYYY-MM-DD' or epoch seconds. Defaults to the last 30 days -
     the API rejects an unbounded range. next_token: pagination token from a previous call."""
     end_ts = _parse_date_ts(end_date, "end_date") if end_date is not None \
         else int(datetime.now(timezone.utc).timestamp())
@@ -610,7 +613,7 @@ def get_workergroup_workers(id: int):
     return _ok(_get_client().run_post("/get_workergroup_workers/", json={"id": id}))
 
 
-# ── vastai_write ──────────────────────────────────────────────────────
+# -- vastai_write --------------------
 
 @_op(vastai_write)
 def create_api_key(name: str, permissions: str | None = None):
@@ -741,7 +744,7 @@ def create_template(
     """Create an instance template.
 
     env: Docker flags STRING, not a dict (e.g. '-e VAR=val -e FOO=bar').
-        WARNING: '-p PORT:PORT' does NOT create port mappings — vast.ai parses it as a broken env var.
+        WARNING: '-p PORT:PORT' does NOT create port mappings - vast.ai parses it as a broken env var.
         Ports are mapped automatically for serverless. Use direct_port_count for instances.
         Values with spaces after -e KEY=val will be split and lost.
     """
@@ -827,17 +830,10 @@ def create_endpoint(
     max_workers: int | None = None,
 ):
     """Create a serverless endpoint."""
-    body: dict = {"endpoint_name": endpoint_name}
-    if min_load is not None:
-        body["min_load"] = min_load
-    if target_util is not None:
-        body["target_util"] = target_util
-    if cold_mult is not None:
-        body["cold_mult"] = cold_mult
-    if cold_workers is not None:
-        body["cold_workers"] = cold_workers
-    if max_workers is not None:
-        body["max_workers"] = max_workers
+    body = _body(
+        endpoint_name=endpoint_name, min_load=min_load, target_util=target_util,
+        cold_mult=cold_mult, cold_workers=cold_workers, max_workers=max_workers,
+    )
     return _ok(_get_client().post("/api/v0/endptjobs/", json=body))
 
 
@@ -852,19 +848,10 @@ def update_endpoint(
     max_workers: int | None = None,
 ):
     """Update a serverless endpoint."""
-    body: dict = {}
-    if endpoint_name is not None:
-        body["endpoint_name"] = endpoint_name
-    if min_load is not None:
-        body["min_load"] = min_load
-    if target_util is not None:
-        body["target_util"] = target_util
-    if cold_mult is not None:
-        body["cold_mult"] = cold_mult
-    if cold_workers is not None:
-        body["cold_workers"] = cold_workers
-    if max_workers is not None:
-        body["max_workers"] = max_workers
+    body = _body(
+        endpoint_name=endpoint_name, min_load=min_load, target_util=target_util,
+        cold_mult=cold_mult, cold_workers=cold_workers, max_workers=max_workers,
+    )
     return _ok(_get_client().put(f"/api/v0/endptjobs/{id}/", json=body))
 
 
@@ -896,25 +883,14 @@ def create_workergroup(
     if search_params is not None:
         search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
-    body: dict = {"endpoint_name": endpoint_name, "client_id": "me"}
-    if endpoint_id is not None:
-        body["endpoint_id"] = endpoint_id
-    if template_hash is not None:
-        body["template_hash"] = template_hash
-    if template_id is not None:
-        body["template_id"] = template_id
-    if search_params is not None:
-        body["search_params"] = search_params
-    if launch_args is not None:
-        body["launch_args"] = launch_args
-    if min_load is not None:
-        body["min_load"] = min_load
-    if target_util is not None:
-        body["target_util"] = target_util
-    if cold_mult is not None:
-        body["cold_mult"] = cold_mult
-    if cold_workers is not None:
-        body["cold_workers"] = cold_workers
+    body = _body(
+        endpoint_name=endpoint_name, client_id="me", endpoint_id=endpoint_id,
+        template_hash=template_hash, template_id=template_id,
+        search_params=search_params, launch_args=launch_args,
+        min_load=min_load, target_util=target_util, cold_mult=cold_mult,
+        cold_workers=cold_workers,
+    )
+    # The API defaults these to 0, which starts a group that never scales up.
     body["max_workers"] = max_workers if max_workers is not None else 20
     body["test_workers"] = test_workers if test_workers is not None else 3
     if gpu_ram_gb is not None:
@@ -949,33 +925,17 @@ def update_workergroup(
     if search_params is not None:
         search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
-    body: dict = {"client_id": "me"}
-    if template_hash is not None:
-        body["template_hash"] = template_hash
-    if template_id is not None:
-        body["template_id"] = template_id
-    if search_params is not None:
-        body["search_params"] = search_params
-    if launch_args is not None:
-        body["launch_args"] = launch_args
-    if min_load is not None:
-        body["min_load"] = min_load
-    if target_util is not None:
-        body["target_util"] = target_util
-    if cold_mult is not None:
-        body["cold_mult"] = cold_mult
-    if test_workers is not None:
-        body["test_workers"] = test_workers
-    if gpu_ram_gb is not None:
-        body["gpu_ram"] = gpu_ram_gb
-    if endpoint_name is not None:
-        body["endpoint_name"] = endpoint_name
-    if endpoint_id is not None:
-        body["endpoint_id"] = endpoint_id
+    body = _body(
+        client_id="me", template_hash=template_hash, template_id=template_id,
+        search_params=search_params, launch_args=launch_args,
+        min_load=min_load, target_util=target_util, cold_mult=cold_mult,
+        test_workers=test_workers, gpu_ram=gpu_ram_gb,
+        endpoint_name=endpoint_name, endpoint_id=endpoint_id,
+    )
     return _ok(_get_client().put(f"/api/v0/workergroups/{id}/", json=body))
 
 
-# ── vastai_execute ────────────────────────────────────────────────────
+# -- vastai_execute --------------------
 
 @_op(vastai_execute)
 def reboot_instance(id: int):
@@ -991,7 +951,7 @@ def recycle_instance(id: int):
 
 @_op(vastai_execute)
 def execute_command(id: int, command: str):
-    """Execute a command on an instance (async — polls S3 up to ~9s for result)."""
+    """Execute a command on an instance (async - polls S3 up to ~9s for result)."""
     result = _get_client().put(
         f"/api/v0/instances/command/{id}/", json={"command": command},
     )
@@ -1033,7 +993,7 @@ def route_request(endpoint: str, cost: float | None = None):
     return _ok(_get_client().run_post("/route/", json=body))
 
 
-# ── vastai_delete ─────────────────────────────────────────────────────
+# -- vastai_delete --------------------
 
 @_op(vastai_delete)
 def destroy_instance(id: int):

@@ -36,12 +36,10 @@ class VastClient:
 
     def _handle(self, r: httpx.Response):
         # 3xx too: redirects are not followed, so an unexpected one means a wrong path,
-        # and its HTML body would only crash json() further down.
+        # and its body is HTML rather than the JSON the caller expects.
         if r.status_code >= 300:
-            try:
-                body = r.json()
-            except Exception:
-                body = r.text
+            ct = r.headers.get("content-type", "")
+            body = r.json() if ct.startswith("application/json") else r.text
             raise APIError(r.status_code, r.request.method, str(r.url), body)
         if r.status_code == 204 or not r.content:
             return None

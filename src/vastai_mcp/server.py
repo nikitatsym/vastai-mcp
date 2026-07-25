@@ -8,7 +8,7 @@ from .registry import ROOT
 
 mcp = FastMCP("vastai")
 
-# ── State (populated by _register_tools) ──────────────────────────────
+# -- State (populated by _register_tools) --------------------
 
 _group_ops: dict[str, dict] = {}  # {group_name: {PascalName: fn}}
 _all_grouped: dict[str, str] = {}  # {PascalName: group_name}
@@ -127,7 +127,7 @@ def _build_help(group_name: str) -> str:
         doc = inspect.getdoc(fn) or ""
         head, _, body = doc.partition("\n\n")
         head = " ".join(head.split())
-        lines.append(f"  {pascal_name}({', '.join(parts)}) — {head}")
+        lines.append(f"  {pascal_name}({', '.join(parts)}) - {head}")
         for body_line in body.rstrip().splitlines():
             lines.append(f"    {body_line}" if body_line else "")
     return f"{len(ops)} operations available:\n" + "\n".join(lines)

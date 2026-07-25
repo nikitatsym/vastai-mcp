@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+from typing import Literal
 
 import httpx
 import pytest
@@ -37,7 +38,7 @@ from vastai_mcp.server import (
 )
 
 
-# ── _parse_ram_mb ────────────────────────────────────────────────────
+# -- _parse_ram_mb --------------------
 
 class TestParseRamMb:
     def test_gb(self):
@@ -73,7 +74,7 @@ class TestParseRamMb:
             _parse_ram_mb("")
 
 
-# ── tolerance ────────────────────────────────────────────────────────
+# -- tolerance --------------------
 
 class TestRamTolerance:
     def test_floor_catches_24gb_gpu(self):
@@ -105,7 +106,7 @@ class TestRamTolerance:
         assert ceil < 49140, f"ceil {ceil} should be below 49140"
 
 
-# ── _build_offer_query ───────────────────────────────────────────────
+# -- _build_offer_query --------------------
 
 class TestBuildOfferQuery:
     def test_defaults(self):
@@ -151,7 +152,7 @@ class TestBuildOfferQuery:
         assert q["reliability2"] == {"gte": 0.99}
 
 
-# ── _parse_order ─────────────────────────────────────────────────────
+# -- _parse_order --------------------
 
 class TestParseOrder:
     def test_none(self):
@@ -170,7 +171,7 @@ class TestParseOrder:
         assert _parse_order("dph_total-desc") == [["dph_total", "desc"]]
 
 
-# ── _coerce_call ─────────────────────────────────────────────────────
+# -- _coerce_call --------------------
 
 class TestCoerceCall:
     def _get_search_offers(self):
@@ -196,27 +197,19 @@ class TestCoerceCall:
         with pytest.raises(ValueError, match="on-demand.*bid.*interruptible"):
             _coerce_call(fn, {"type": "spot"})
 
-    def test_valid_literal_passes(self):
-        # Should not raise — just validates, doesn't call API
-        fn = self._get_search_offers()
-        # This will fail at API call, but should pass validation
-        try:
-            _coerce_call(fn, {"type": "on-demand"})
-        except ValueError:
-            pytest.fail("Valid Literal value should not raise ValueError")
-        except Exception:
-            pass  # API call failure is expected without credentials
+    def test_valid_literal_reaches_query(self, fake_client):
+        client = fake_client({"offers": []})
+        _coerce_call(self._get_search_offers(), {"type": "on-demand"})
+        assert client.calls[0][2]["json"]["type"] == "on-demand"
 
 
-# ── _get_literal_values ──────────────────────────────────────────────
+# -- _get_literal_values --------------------
 
 class TestGetLiteralValues:
     def test_plain_literal(self):
-        from typing import Literal
         assert _get_literal_values(Literal["a", "b"]) == ("a", "b")
 
     def test_optional_literal(self):
-        from typing import Literal, Optional
         vals = _get_literal_values(Literal["a", "b"] | None)
         assert vals == ("a", "b")
 
@@ -227,7 +220,7 @@ class TestGetLiteralValues:
         assert _get_literal_values(int) is None
 
 
-# ── _format_type ─────────────────────────────────────────────────────
+# -- _format_type --------------------
 
 class TestFormatType:
     def test_str(self):
@@ -240,11 +233,9 @@ class TestFormatType:
         assert _format_type(bool) == "bool"
 
     def test_literal(self):
-        from typing import Literal
         assert _format_type(Literal["a", "b"]) == "a|b"
 
     def test_optional_literal(self):
-        from typing import Literal
         result = _format_type(Literal["x", "y"] | None)
         assert result == "x|y"
 
@@ -253,7 +244,7 @@ class TestFormatType:
         assert result == "str"
 
 
-# ── _build_help ──────────────────────────────────────────────────────
+# -- _build_help --------------------
 
 class TestBuildHelp:
     def test_shows_types(self):
@@ -270,7 +261,7 @@ class TestBuildHelp:
         assert h.startswith("24 operations available:")
 
 
-# ── _to_pascal ───────────────────────────────────────────────────────
+# -- _to_pascal --------------------
 
 class TestToPascal:
     def test_basic(self):
@@ -280,7 +271,7 @@ class TestToPascal:
         assert _to_pascal("show") == "Show"
 
 
-# ── edge cases: _parse_ram_mb ────────────────────────────────────────
+# -- edge cases: _parse_ram_mb --------------------
 
 class TestParseRamMbEdge:
     def test_whitespace_around(self):
@@ -315,13 +306,13 @@ class TestParseRamMbEdge:
             _parse_ram_mb([24, "GB"])
 
 
-# ── edge cases: tolerance boundary math ──────────────────────────────
+# -- edge cases: tolerance boundary math --------------------
 
 class TestRamToleranceBoundary:
     """Real GPU sizes from Vast.ai API vs nominal."""
 
     # Known real values: RTX 4090=24564, RTX 4090 48GB=49140,
-    # A100 40GB≈40960, A100 80GB≈81920, H100 80GB≈81559
+    # A100 40GB~40960, A100 80GB~81920, H100 80GB~81559
 
     @pytest.mark.parametrize("nominal_gb,real_mb", [
         (24, 24564),   # RTX 4090
@@ -372,7 +363,7 @@ class TestRamToleranceBoundary:
         )
 
 
-# ── _coerce_call: tricky agent inputs ───────────────────────────────
+# -- _coerce_call: tricky agent inputs --------------------
 
 class TestCoerceCallEdge:
     def _get_fn(self, group, op):
@@ -396,24 +387,16 @@ class TestCoerceCallEdge:
         with pytest.raises(ValueError, match="Unknown parameters.*raw_query"):
             _coerce_call(fn, {"raw_query": {"gpu_name": {"eq": "RTX 4090"}}})
 
-    def test_empty_params_ok(self):
-        """Empty params should work — all SearchOffers params have defaults."""
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        try:
-            _coerce_call(fn, {})
-        except ValueError:
-            pytest.fail("Empty params should not raise ValueError")
-        except Exception:
-            pass  # API failure expected
+    def test_empty_params_ok(self, fake_client):
+        """Empty params should work - all SearchOffers params have defaults."""
+        client = fake_client({"offers": []})
+        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {})
+        assert client.calls[0][1] == "/api/v0/bundles/"
 
-    def test_none_value_for_optional_passes(self):
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        try:
-            _coerce_call(fn, {"gpu_name": None})
-        except ValueError:
-            pytest.fail("None for optional param should not raise ValueError")
-        except Exception:
-            pass
+    def test_none_value_for_optional_is_omitted(self, fake_client):
+        client = fake_client({"offers": []})
+        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"gpu_name": None})
+        assert "gpu_name" not in client.calls[0][2]["json"]
 
     def test_literal_case_sensitive(self):
         """'On-Demand' is not 'on-demand'."""
@@ -421,50 +404,34 @@ class TestCoerceCallEdge:
         with pytest.raises(ValueError, match="Invalid value"):
             _coerce_call(fn, {"type": "On-Demand"})
 
-    def test_literal_none_for_optional_passes(self):
+    def test_literal_none_for_optional_is_omitted(self, fake_client):
         """None should bypass Literal validation for optional params."""
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        try:
-            _coerce_call(fn, {"type": None})
-        except ValueError:
-            pytest.fail("None for optional Literal should not raise")
-        except Exception:
-            pass
+        client = fake_client({"offers": []})
+        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"type": None})
+        assert "type" not in client.calls[0][2]["json"]
 
     def test_manage_instance_literal(self):
         fn = self._get_fn("vastai_write", "ManageInstance")
         with pytest.raises(ValueError, match="Invalid value.*paused"):
             _coerce_call(fn, {"id": 1, "state": "paused"})
 
-    def test_manage_instance_valid_state(self):
-        fn = self._get_fn("vastai_write", "ManageInstance")
-        try:
-            _coerce_call(fn, {"id": 1, "state": "running"})
-        except ValueError:
-            pytest.fail("'running' is a valid state")
-        except Exception:
-            pass
+    def test_manage_instance_valid_state(self, fake_client):
+        client = fake_client({"success": True})
+        _coerce_call(self._get_fn("vastai_write", "ManageInstance"), {"id": 1, "state": "running"})
+        assert client.calls[0][2]["json"] == {"state": "running"}
 
-    def test_bool_coercion_from_string(self):
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        try:
-            _coerce_call(fn, {"verified": "true"})
-        except ValueError:
-            pytest.fail("String 'true' should coerce to bool")
-        except Exception:
-            pass
+    def test_bool_coercion_from_string(self, fake_client):
+        client = fake_client({"offers": []})
+        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"verified": "true"})
+        assert client.calls[0][2]["json"]["verified"] == {"eq": True}
 
-    def test_bool_coercion_from_int(self):
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        try:
-            _coerce_call(fn, {"verified": 1})
-        except ValueError:
-            pytest.fail("Int 1 should coerce to bool")
-        except Exception:
-            pass
+    def test_bool_coercion_from_int(self, fake_client):
+        client = fake_client({"offers": []})
+        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"verified": 1})
+        assert client.calls[0][2]["json"]["verified"] == {"eq": True}
 
 
-# ── _dispatch ────────────────────────────────────────────────────────
+# -- _dispatch --------------------
 
 class TestDispatch:
     def test_wrong_group_gives_hint(self):
@@ -478,7 +445,6 @@ class TestDispatch:
         assert "help" in result["error"]
 
     def test_help_operation(self):
-        from vastai_mcp.server import _build_help
         # _dispatch is not called for help (handled in tool_fn), but
         # _build_help should not crash for any registered group
         for group_name in _group_ops:
@@ -486,7 +452,7 @@ class TestDispatch:
             assert "operations available" in h
 
 
-# ── _validate_env ────────────────────────────────────────────────────
+# -- _validate_env --------------------
 
 class TestValidateEnv:
     def test_port_mapping_crashes(self):
@@ -505,7 +471,7 @@ class TestValidateEnv:
             _validate_env("-e KEY=val1 val2")
 
 
-# ── _validate_search_params ──────────────────────────────────────────
+# -- _validate_search_params --------------------
 
 class TestValidateSearchParams:
     def test_missing_rentable_crashes(self):
@@ -537,7 +503,7 @@ class TestValidateSearchParams:
         assert result == "rentable=true rented=false gpu_name=RTX_4090"
 
 
-# ── _parse_order_by ──────────────────────────────────────────────────
+# -- _parse_order_by --------------------
 
 class TestParseOrderBy:
     def test_none(self):
@@ -550,7 +516,7 @@ class TestParseOrderBy:
         assert _parse_order_by("-count_created") == [{"col": "count_created", "dir": "desc"}]
 
 
-# ── _resolve_gpu_name ────────────────────────────────────────────────
+# -- _resolve_gpu_name --------------------
 
 @pytest.fixture
 def gpu_catalog(monkeypatch):
@@ -576,7 +542,7 @@ class TestResolveGpuName:
             _resolve_gpu_name("RTX 9090")
 
 
-# ── _parse_date_ts ───────────────────────────────────────────────────
+# -- _parse_date_ts --------------------
 
 class TestParseDateTs:
     def test_iso_date(self):
@@ -597,7 +563,7 @@ class TestParseDateTs:
             _parse_date_ts("nope", "end_date")
 
 
-# ── request shapes ───────────────────────────────────────────────────
+# -- request shapes --------------------
 
 class _FakeClient:
     def __init__(self, response):
@@ -610,6 +576,10 @@ class _FakeClient:
 
     def post(self, path, **kwargs):
         self.calls.append(("POST", path, kwargs))
+        return self.response
+
+    def put(self, path, **kwargs):
+        self.calls.append(("PUT", path, kwargs))
         return self.response
 
 
@@ -690,7 +660,7 @@ class TestInvoicesRequest:
             show_invoices_v1(start_date="yesterday")
 
 
-# ── client error handling ────────────────────────────────────────────
+# -- client error handling --------------------
 
 class TestRepoAscii:
     def test_sources_are_ascii(self):
@@ -759,7 +729,7 @@ class TestClientHandle:
             VastClient()._handle(r)
 
 
-# ── registration integrity ──────────────────────────────────────────
+# -- registration integrity --------------------
 
 class TestRegistration:
     def test_all_ops_have_docstrings(self):
