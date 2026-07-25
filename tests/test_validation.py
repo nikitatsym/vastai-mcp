@@ -12,10 +12,9 @@ from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.server import (
     _all_grouped,
     _build_help,
-    _coerce_call,
+    _build_params_model,
     _dispatch,
     _format_type,
-    _get_literal_values,
     _group_ops,
     _to_pascal,
 )
@@ -170,53 +169,69 @@ class TestParseOrder:
         assert _parse_order("dph_total-desc") == [["dph_total", "desc"]]
 
 
-# -- _coerce_call --------------------
+# -- params model --------------------
 
-class TestCoerceCall:
-    def _get_search_offers(self):
-        return _group_ops["vastai_read"]["SearchOffers"]
+class TestParamsModel:
+    """Validation now comes from the Pydantic model built off the signature."""
 
     def test_unknown_param_crashes(self):
-        fn = self._get_search_offers()
-        with pytest.raises(ValueError, match="Unknown parameters.*bogus"):
-            _coerce_call(fn, {"bogus": 1})
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            _dispatch("SearchOffers", "vastai_read", {"bogus": 1})
 
-    def test_unknown_param_lists_valid(self):
-        fn = self._get_search_offers()
-        with pytest.raises(ValueError, match="Valid:.*gpu_name"):
-            _coerce_call(fn, {"bogus": 1})
+    def test_unknown_param_names_the_key(self):
+        with pytest.raises(ValueError, match="bogus"):
+            _dispatch("SearchOffers", "vastai_read", {"bogus": 1})
+
+    def test_error_points_at_schema(self):
+        with pytest.raises(ValueError, match="operation='schema'"):
+            _dispatch("SearchOffers", "vastai_read", {"bogus": 1})
+
+    def test_wrong_type_crashes(self):
+        with pytest.raises(ValueError, match="Input should be a valid integer"):
+            _dispatch("SearchOffers", "vastai_read", {"limit": "abc"})
+
+    def test_wrong_type_names_the_field(self):
+        with pytest.raises(ValueError) as exc:
+            _dispatch("SearchOffers", "vastai_read", {"limit": "abc"})
+        assert "- limit:" in str(exc.value)
+
+    def test_wrong_type_echoes_the_input(self):
+        with pytest.raises(ValueError, match="got 'abc'"):
+            _dispatch("SearchOffers", "vastai_read", {"limit": "abc"})
+
+    def test_missing_required_crashes(self):
+        with pytest.raises(ValueError, match="Field required"):
+            _dispatch("ShowInstance", "vastai_read", {})
 
     def test_invalid_literal_crashes(self):
-        fn = self._get_search_offers()
-        with pytest.raises(ValueError, match="Invalid value.*spot"):
-            _coerce_call(fn, {"type": "spot"})
+        with pytest.raises(ValueError, match="Input should be"):
+            _dispatch("SearchOffers", "vastai_read", {"type": "spot"})
 
     def test_invalid_literal_lists_accepted(self):
-        fn = self._get_search_offers()
-        with pytest.raises(ValueError, match="on-demand.*bid.*interruptible"):
-            _coerce_call(fn, {"type": "spot"})
+        with pytest.raises(ValueError, match="'on-demand', 'bid' or 'interruptible'"):
+            _dispatch("SearchOffers", "vastai_read", {"type": "spot"})
 
     def test_valid_literal_reaches_query(self, fake_client):
         client = fake_client({"offers": []})
-        _coerce_call(self._get_search_offers(), {"type": "on-demand"})
+        _dispatch("SearchOffers", "vastai_read", {"type": "on-demand"})
         assert client.calls[0][2]["json"]["type"] == "on-demand"
 
+    def test_numeric_string_still_coerced(self, fake_client):
+        client = fake_client({"offers": []})
+        _dispatch("SearchOffers", "vastai_read", {"limit": "5"})
+        assert client.calls[0][2]["json"]["limit"] == 5
 
-# -- _get_literal_values --------------------
+    def test_model_forbids_extra(self):
+        model = _build_params_model(tools.search_offers)
+        assert model.model_config["extra"] == "forbid"
 
-class TestGetLiteralValues:
-    def test_plain_literal(self):
-        assert _get_literal_values(Literal["a", "b"]) == ("a", "b")
+    def test_model_keeps_signature_order(self):
+        model = _build_params_model(tools.search_offers)
+        assert list(model.model_fields)[:3] == ["limit", "gpu_name", "num_gpus"]
 
-    def test_optional_literal(self):
-        vals = _get_literal_values(Literal["a", "b"] | None)
-        assert vals == ("a", "b")
-
-    def test_non_literal(self):
-        assert _get_literal_values(str) is None
-
-    def test_plain_int(self):
-        assert _get_literal_values(int) is None
+    def test_annotated_description_reaches_field(self):
+        model = _build_params_model(tools.search_offers)
+        assert "24GB" in model.model_fields["gpu_ram_min"].description
 
 
 # -- _format_type --------------------
@@ -248,8 +263,16 @@ class TestFormatType:
 class TestBuildHelp:
     def test_shows_types(self):
         h = _build_help("vastai_read")
-        assert "gpu_ram_min: str" in h
-        assert "dph_total: float" in h
+        assert "gpu_ram_min?: str" in h
+        assert "dph_total?: float" in h
+
+    def test_marks_required_params(self):
+        h = _build_help("vastai_read")
+        assert "ShowInstance(id: int)" in h
+
+    def test_shows_defaults(self):
+        h = _build_help("vastai_read")
+        assert "limit?: int=20" in h
 
     def test_shows_literal_values(self):
         h = _build_help("vastai_read")
@@ -257,7 +280,24 @@ class TestBuildHelp:
 
     def test_shows_operation_count(self):
         h = _build_help("vastai_read")
-        assert h.startswith("24 operations available:")
+        assert h.startswith("24 operations available.")
+
+    def test_points_at_schema(self):
+        h = _build_help("vastai_read")
+        assert "operation='schema'" in h
+
+    def test_bullets_come_from_field_descriptions(self):
+        h = _build_help("vastai_read")
+        assert "    gpu_ram_min: Units required" in h
+
+    def test_only_described_params_get_a_bullet(self):
+        h = _build_help("vastai_read")
+        assert "    num_gpus:" not in h
+
+    def test_constraints_left_the_docstring_body(self):
+        """A constraint must reach help through Field(description=...), not both ways."""
+        doc = tools.search_offers.__doc__
+        assert "24GB" not in doc
 
 
 # -- _to_pascal --------------------
@@ -362,86 +402,82 @@ class TestRamToleranceBoundary:
         )
 
 
-# -- _coerce_call: tricky agent inputs --------------------
+# -- params model: tricky agent inputs --------------------
 
-class TestCoerceCallEdge:
-    def _get_fn(self, group, op):
-        return _group_ops[group][op]
-
+class TestParamsModelEdge:
     def test_multiple_unknown_params(self):
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        with pytest.raises(ValueError, match="Unknown parameters") as exc:
-            _coerce_call(fn, {"foo": 1, "bar": 2, "baz": 3})
+        with pytest.raises(ValueError) as exc:
+            _dispatch("SearchOffers", "vastai_read", {"foo": 1, "bar": 2, "baz": 3})
         msg = str(exc.value)
         assert "bar" in msg and "baz" in msg and "foo" in msg
 
     def test_old_gpu_ram_param_rejected(self):
         """Agent using old API should get a clear error, not silent ignore."""
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        with pytest.raises(ValueError, match="Unknown parameters.*gpu_ram"):
-            _coerce_call(fn, {"gpu_ram": "24GB"})
+        with pytest.raises(ValueError, match="gpu_ram: Extra inputs are not permitted"):
+            _dispatch("SearchOffers", "vastai_read", {"gpu_ram": "24GB"})
 
     def test_old_raw_query_param_rejected(self):
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        with pytest.raises(ValueError, match="Unknown parameters.*raw_query"):
-            _coerce_call(fn, {"raw_query": {"gpu_name": {"eq": "RTX 4090"}}})
+        with pytest.raises(ValueError, match="raw_query: Extra inputs are not permitted"):
+            _dispatch(
+                "SearchOffers", "vastai_read", {"raw_query": {"gpu_name": {"eq": "RTX 4090"}}}
+            )
 
     def test_empty_params_ok(self, fake_client):
         """Empty params should work - all SearchOffers params have defaults."""
         client = fake_client({"offers": []})
-        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {})
+        _dispatch("SearchOffers", "vastai_read", {})
         assert client.calls[0][1] == "/api/v0/bundles/"
 
     def test_none_value_for_optional_is_omitted(self, fake_client):
         client = fake_client({"offers": []})
-        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"gpu_name": None})
+        _dispatch("SearchOffers", "vastai_read", {"gpu_name": None})
         assert "gpu_name" not in client.calls[0][2]["json"]
 
     def test_literal_case_sensitive(self):
         """'On-Demand' is not 'on-demand'."""
-        fn = self._get_fn("vastai_read", "SearchOffers")
-        with pytest.raises(ValueError, match="Invalid value"):
-            _coerce_call(fn, {"type": "On-Demand"})
+        with pytest.raises(ValueError, match="Input should be"):
+            _dispatch("SearchOffers", "vastai_read", {"type": "On-Demand"})
 
     def test_literal_none_for_optional_is_omitted(self, fake_client):
         """None should bypass Literal validation for optional params."""
         client = fake_client({"offers": []})
-        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"type": None})
+        _dispatch("SearchOffers", "vastai_read", {"type": None})
         assert "type" not in client.calls[0][2]["json"]
 
     def test_manage_instance_literal(self):
-        fn = self._get_fn("vastai_write", "ManageInstance")
-        with pytest.raises(ValueError, match="Invalid value.*paused"):
-            _coerce_call(fn, {"id": 1, "state": "paused"})
+        with pytest.raises(ValueError, match="'running' or 'stopped'"):
+            _dispatch("ManageInstance", "vastai_write", {"id": 1, "state": "paused"})
 
     def test_manage_instance_valid_state(self, fake_client):
         client = fake_client({"success": True})
-        _coerce_call(self._get_fn("vastai_write", "ManageInstance"), {"id": 1, "state": "running"})
+        _dispatch("ManageInstance", "vastai_write", {"id": 1, "state": "running"})
         assert client.calls[0][2]["json"] == {"state": "running"}
 
     def test_bool_coercion_from_string(self, fake_client):
         client = fake_client({"offers": []})
-        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"verified": "true"})
+        _dispatch("SearchOffers", "vastai_read", {"verified": "true"})
         assert client.calls[0][2]["json"]["verified"] == {"eq": True}
 
     def test_bool_coercion_from_int(self, fake_client):
         client = fake_client({"offers": []})
-        _coerce_call(self._get_fn("vastai_read", "SearchOffers"), {"verified": 1})
+        _dispatch("SearchOffers", "vastai_read", {"verified": 1})
         assert client.calls[0][2]["json"]["verified"] == {"eq": True}
 
 
 # -- _dispatch --------------------
 
 class TestDispatch:
-    def test_wrong_group_gives_hint(self):
-        result = _dispatch("DestroyInstance", "vastai_read", {})
-        assert "error" in result
-        assert "vastai_delete" in result["error"]
+    def test_wrong_group_crashes_with_hint(self):
+        with pytest.raises(ValueError, match="vastai_delete"):
+            _dispatch("DestroyInstance", "vastai_read", {})
 
-    def test_unknown_operation(self):
-        result = _dispatch("BogusOp", "vastai_read", {})
-        assert "error" in result
-        assert "help" in result["error"]
+    def test_unknown_operation_crashes(self):
+        with pytest.raises(ValueError, match="Unknown operation"):
+            _dispatch("BogusOp", "vastai_read", {})
+
+    def test_unknown_operation_points_at_help(self):
+        with pytest.raises(ValueError, match="help"):
+            _dispatch("BogusOp", "vastai_read", {})
 
     def test_help_operation(self):
         # _dispatch is not called for help (handled in tool_fn), but
@@ -449,6 +485,50 @@ class TestDispatch:
         for group_name in _group_ops:
             h = _build_help(group_name)
             assert "operations available" in h
+
+
+# -- operation='schema' --------------------
+
+class TestSchemaOperation:
+    def test_no_op_lists_operations(self):
+        result = _dispatch("schema", "vastai_read", {})
+        assert "SearchOffers" in result["operations"]
+
+    def test_no_op_hints_at_op_param(self):
+        result = _dispatch("schema", "vastai_read", {})
+        assert "op" in result["hint"]
+
+    def test_op_returns_json_schema(self):
+        schema = _dispatch("schema", "vastai_read", {"op": "SearchOffers"})
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["limit"]["type"] == "integer"
+
+    def test_schema_carries_literal_enum(self):
+        schema = _dispatch("schema", "vastai_read", {"op": "SearchOffers"})
+        variants = schema["properties"]["type"]["anyOf"]
+        assert {"enum": ["on-demand", "bid", "interruptible"], "type": "string"} in variants
+
+    def test_schema_carries_param_description(self):
+        schema = _dispatch("schema", "vastai_read", {"op": "SearchOffers"})
+        assert "24GB" in schema["properties"]["gpu_ram_min"]["description"]
+
+    def test_schema_lists_required_fields(self):
+        schema = _dispatch("schema", "vastai_read", {"op": "ShowInstance"})
+        assert schema["required"] == ["id"]
+
+    def test_schema_carries_docstring(self):
+        schema = _dispatch("schema", "vastai_read", {"op": "SearchOffers"})
+        assert schema["description"].startswith("Search GPU offers")
+
+    def test_unknown_op_crashes(self):
+        with pytest.raises(ValueError, match="Unknown operation"):
+            _dispatch("schema", "vastai_read", {"op": "BogusOp"})
+
+    def test_every_op_has_a_schema(self):
+        for group_name, ops in _group_ops.items():
+            for op_name in ops:
+                schema = _dispatch("schema", group_name, {"op": op_name})
+                assert schema["type"] == "object"
 
 
 # -- _validate_env --------------------

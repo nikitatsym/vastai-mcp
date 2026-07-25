@@ -3,9 +3,10 @@ import re
 import time
 from datetime import UTC, datetime
 from importlib.metadata import version
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
+from pydantic import Field
 
 from .client import VastClient
 from .registry import ROOT, Group, _op
@@ -308,6 +309,28 @@ def _fetch_result(result: dict[str, Any] | None) -> Any:
     return result.get("msg", f"Logs not available (result_url returned {r.status_code})")
 
 
+# -- Shared param descriptions --------------------
+
+_GPU_RAM_UNITS = "Units required: '24GB' or '24564MB'."
+_ORDER_FORMAT = "Column name, '-column' or 'column-desc'"
+_DATE_FORMAT = "'YYYY-MM-DD' or epoch seconds."
+_WG_GPU_RAM = "String with units, e.g. '48GB' or '49152MB' (the API takes GB)."
+_WG_SEARCH_PARAMS = (
+    "CLI-format string, e.g. 'gpu_name=RTX_3060 gpu_ram>=12GB verified=true "
+    "rentable=true rented=false'. GPU names use underscores, not spaces. "
+    "Your params REPLACE the API default 'verified=true rentable=true rented=false' "
+    "entirely, so they MUST keep 'rentable=true rented=false' or the engine will try "
+    "to rent unrentable and already-rented machines."
+)
+_WG_LAUNCH_ARGS = "CLI-format string, e.g. '--model /model --ctx 4096'."
+_TEMPLATE_ENV = (
+    "Docker flags STRING, not a dict, e.g. '-e VAR=val -e FOO=bar'. "
+    "'-p PORT:PORT' does NOT create port mappings - vast.ai parses it as a broken env "
+    "var; ports are mapped automatically for serverless, use direct_port_count for "
+    "instances. A value with spaces after '-e KEY=val' is split and lost."
+)
+
+
 # -- Groups --------------------
 
 vastai_read = Group(
@@ -387,23 +410,23 @@ def list_secrets() -> Any:
 @_op(vastai_read)
 def search_offers(
     limit: int = 20,
-    gpu_name: str | None = None,
+    gpu_name: Annotated[str | None, Field(description=(
+        "Either spelling works ('RTX 4090' or 'RTX_4090'); ListGpuNames has the catalog."
+    ))] = None,
     num_gpus: int | None = None,
-    gpu_ram_min: str | None = None,
-    gpu_ram_max: str | None = None,
-    dph_total: float | None = None,
+    gpu_ram_min: Annotated[str | None, Field(description=_GPU_RAM_UNITS)] = None,
+    gpu_ram_max: Annotated[str | None, Field(description=_GPU_RAM_UNITS)] = None,
+    dph_total: Annotated[float | None, Field(description="Price ceiling in $/hr.")] = None,
     reliability: float | None = None,
     geolocation: str | None = None,
     type: Literal["on-demand", "bid", "interruptible"] | None = None,
     verified: bool | None = None,
     datacenter: bool | None = None,
-    order: str | None = None,
+    order: Annotated[str | None, Field(
+        description=f"{_ORDER_FORMAT}, e.g. '-reliability'.",
+    )] = None,
 ) -> Any:
-    """Search GPU offers.
-
-    gpu_name: either spelling works ('RTX 4090' or 'RTX_4090'); see ListGpuNames for the catalog.
-    gpu_ram_min/gpu_ram_max require units: '24GB' or '24564MB'. dph_total in $/hr.
-    order: column name, '-column' or 'column-desc' (e.g. '-reliability')."""
+    """Search GPU offers."""
     ram_min_mb = _parse_ram_mb(gpu_ram_min) if gpu_ram_min is not None else None
     ram_max_mb = _parse_ram_mb(gpu_ram_max) if gpu_ram_max is not None else None
     if gpu_name is not None:
@@ -432,16 +455,15 @@ def list_gpu_names() -> Any:
 
 @_op(vastai_read)
 def search_templates(
-    name: str | None = None,
-    image: str | None = None,
+    name: Annotated[str | None, Field(description="Substring match.")] = None,
+    image: Annotated[str | None, Field(description="Substring match.")] = None,
     recommended: bool | None = None,
     limit: int = 20,
-    order: str | None = None,
+    order: Annotated[str | None, Field(
+        description=f"{_ORDER_FORMAT}, e.g. '-count_created' for the most used.",
+    )] = None,
 ) -> Any:
-    """Search instance templates (slimmed).
-
-    name/image match substrings. order: column name, '-column' or 'column-desc'
-    (e.g. '-count_created' for most used)."""
+    """Search instance templates (slimmed)."""
     filters: dict[str, Any] = {}
     if name is not None:
         filters["name"] = name
@@ -492,14 +514,16 @@ def show_instance_ssh_keys(instance_id: int) -> Any:
 @_op(vastai_read)
 def show_logs(
     id: int,
-    tail: int = 500,
-    filter: str | None = None,
-    daemon_logs: bool = False,
+    tail: Annotated[int, Field(description="Number of lines, 0 for all.")] = 500,
+    filter: Annotated[str | None, Field(
+        description="Regex kept over the fetched lines.",
+    )] = None,
+    daemon_logs: Annotated[bool, Field(
+        description="Fetch daemon/system logs instead of user logs.",
+    )] = False,
 ) -> Any:
     """Get instance logs (async - polls S3 up to ~9s for result).
 
-    tail: number of lines (0=all, default 500). filter: regex grep.
-    daemon_logs: if true, fetch daemon/system logs instead of user logs.
     Instance must be running - loading instances have no logs yet."""
     body: dict[str, Any] = {"tail": str(tail)}
     if daemon_logs:
@@ -532,16 +556,21 @@ def search_invoices(type: str | None = None, select_filters: str | None = None) 
 
 @_op(vastai_read)
 def show_invoices_v1(
-    start_date: str | None = None,
-    end_date: str | None = None,
+    start_date: Annotated[str | None, Field(
+        description=f"{_DATE_FORMAT} Defaults to 30 days before end_date.",
+    )] = None,
+    end_date: Annotated[str | None, Field(
+        description=f"{_DATE_FORMAT} Defaults to now.",
+    )] = None,
     latest_first: bool = True,
     limit: int = 20,
-    next_token: str | None = None,
+    next_token: Annotated[str | None, Field(
+        description="Pagination token from a previous call.",
+    )] = None,
 ) -> Any:
     """Get invoices (v1 API, paginated).
 
-    start_date/end_date: 'YYYY-MM-DD' or epoch seconds. Defaults to the last 30 days -
-    the API rejects an unbounded range. next_token: pagination token from a previous call."""
+    The range defaults to the last 30 days - the API rejects an unbounded one."""
     end_ts = _parse_date_ts(end_date, "end_date") if end_date is not None \
         else int(datetime.now(UTC).timestamp())
     start_ts = _parse_date_ts(start_date, "start_date") if start_date is not None \
@@ -593,8 +622,13 @@ def list_workergroups() -> Any:
 
 
 @_op(vastai_read)
-def get_endpoint_logs(endpoint: str, tail: int = 500) -> Any:
-    """Get endpoint logs. tail: characters per log level (default 500). Increase for more history."""
+def get_endpoint_logs(
+    endpoint: str,
+    tail: Annotated[int, Field(
+        description="Characters per log level. Increase for more history.",
+    )] = 500,
+) -> Any:
+    """Get endpoint logs."""
     return _ok(_get_client().run_post(
         "/get_endpoint_logs/", json={"endpoint": endpoint, "tail": tail},
     ))
@@ -607,8 +641,13 @@ def get_endpoint_workers(id: int) -> Any:
 
 
 @_op(vastai_read)
-def get_workergroup_logs(id: int, tail: int = 500) -> Any:
-    """Get worker group logs. tail: characters per log level (default 500). Increase for more history."""
+def get_workergroup_logs(
+    id: int,
+    tail: Annotated[int, Field(
+        description="Characters per log level. Increase for more history.",
+    )] = 500,
+) -> Any:
+    """Get worker group logs."""
     return _ok(_get_client().run_post(
         "/get_workergroup_logs/", json={"id": id, "tail": tail},
     ))
@@ -657,12 +696,15 @@ def update_secret(key: str, value: str) -> Any:
 
 @_op(vastai_write)
 def create_instance(
-    id: int,
+    id: Annotated[int, Field(description="Offer ID from SearchOffers.")],
     image: str,
     disk: float,
     label: str | None = None,
     onstart: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Annotated[dict[str, str] | None, Field(description=(
+        "Dict of variables, e.g. {'VAR': 'val'} - unlike templates, where env is a "
+        "Docker flags string."
+    ))] = None,
     runtype: str | None = None,
     price: float | None = None,
     args_str: str | None = None,
@@ -671,7 +713,7 @@ def create_instance(
     python_utf8: bool | None = None,
     lang_utf8: bool | None = None,
 ) -> Any:
-    """Rent a GPU instance from an offer. id = offer ID. env is a dict (e.g. {'VAR': 'val'}), unlike templates where env is a Docker flags string."""
+    """Rent a GPU instance from an offer."""
     body: dict[str, Any] = {"client_id": "me", "image": image, "disk": disk}
     if label is not None:
         body["label"] = label
@@ -737,7 +779,7 @@ def create_template(
     name: str,
     image: str,
     tag: str | None = None,
-    env: str | None = None,
+    env: Annotated[str | None, Field(description=_TEMPLATE_ENV)] = None,
     onstart: str | None = None,
     runtype: str | None = None,
     desc: str | None = None,
@@ -748,13 +790,7 @@ def create_template(
     private: bool | None = None,
     args_str: str | None = None,
 ) -> Any:
-    """Create an instance template.
-
-    env: Docker flags STRING, not a dict (e.g. '-e VAR=val -e FOO=bar').
-        WARNING: '-p PORT:PORT' does NOT create port mappings - vast.ai parses it as a broken env var.
-        Ports are mapped automatically for serverless. Use direct_port_count for instances.
-        Values with spaces after -e KEY=val will be split and lost.
-    """
+    """Create an instance template."""
     if env is not None:
         _validate_env(env)
     body: dict[str, Any] = {"name": name, "image": image}
@@ -788,14 +824,11 @@ def edit_template(
     hash_id: str,
     name: str | None = None,
     image: str | None = None,
-    env: str | None = None,
+    env: Annotated[str | None, Field(description=_TEMPLATE_ENV)] = None,
     desc: str | None = None,
     recommended_disk_space: float | None = None,
 ) -> Any:
-    """Edit an existing template.
-
-    env: Docker flags STRING (e.g. '-e VAR=val'). Same validation as create_template.
-    """
+    """Edit an existing template."""
     if env is not None:
         _validate_env(env)
     body: dict[str, Any] = {"hash_id": hash_id}
@@ -868,25 +901,17 @@ def create_workergroup(
     endpoint_id: int | None = None,
     template_hash: str | None = None,
     template_id: int | None = None,
-    search_params: str | None = None,
-    launch_args: str | None = None,
+    search_params: Annotated[str | None, Field(description=_WG_SEARCH_PARAMS)] = None,
+    launch_args: Annotated[str | None, Field(description=_WG_LAUNCH_ARGS)] = None,
     min_load: float | None = None,
     target_util: float | None = None,
     cold_mult: float | None = None,
     cold_workers: int | None = None,
     max_workers: int | None = None,
     test_workers: int | None = None,
-    gpu_ram: str | None = None,
+    gpu_ram: Annotated[str | None, Field(description=_WG_GPU_RAM)] = None,
 ) -> Any:
-    """Create a worker group for a serverless endpoint.
-
-    gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
-    search_params: CLI-format string (e.g. 'gpu_name=RTX_3060 gpu_ram>=12 verified=true rentable=true rented=false').
-        GPU names use underscores not spaces (RTX_3060, RTX_4090, A100_SXM4, etc.).
-        API default is 'verified=true rentable=true rented=false'. Your params REPLACE it entirely.
-        MUST include 'rentable=true rented=false' or engine will try unrentable/rented machines.
-    launch_args: CLI-format string (e.g. '--model /model --ctx 4096').
-    """
+    """Create a worker group for a serverless endpoint."""
     if search_params is not None:
         search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
@@ -910,25 +935,17 @@ def update_workergroup(
     id: int,
     template_hash: str | None = None,
     template_id: int | None = None,
-    search_params: str | None = None,
-    launch_args: str | None = None,
+    search_params: Annotated[str | None, Field(description=_WG_SEARCH_PARAMS)] = None,
+    launch_args: Annotated[str | None, Field(description=_WG_LAUNCH_ARGS)] = None,
     min_load: float | None = None,
     target_util: float | None = None,
     cold_mult: float | None = None,
     test_workers: int | None = None,
-    gpu_ram: str | None = None,
+    gpu_ram: Annotated[str | None, Field(description=_WG_GPU_RAM)] = None,
     endpoint_name: str | None = None,
     endpoint_id: int | None = None,
 ) -> Any:
-    """Update a worker group.
-
-    gpu_ram: string with units, e.g. '48GB' or '49152MB' (API uses GB).
-    search_params: CLI-format string (e.g. 'gpu_name=RTX_3060 gpu_ram>=12 verified=true rentable=true rented=false').
-        GPU names use underscores not spaces (RTX_3060, RTX_4090, A100_SXM4, etc.).
-        Your params REPLACE API defaults entirely.
-        MUST include 'rentable=true rented=false' or engine will try unrentable/rented machines.
-    launch_args: CLI-format string.
-    """
+    """Update a worker group."""
     if search_params is not None:
         search_params = _validate_search_params(search_params)
     gpu_ram_gb = _parse_gpu_ram(gpu_ram, "GB") if gpu_ram is not None else None
@@ -992,8 +1009,13 @@ def cloud_copy(
 
 
 @_op(vastai_execute)
-def route_request(endpoint: str, cost: float | None = None) -> Any:
-    """Route a request to a serverless endpoint. endpoint: endpoint name (string). Returns worker URL if available."""
+def route_request(
+    endpoint: Annotated[str, Field(description="Endpoint name.")],
+    cost: float | None = None,
+) -> Any:
+    """Route a request to a serverless endpoint.
+
+    Returns the worker URL when one is available."""
     body: dict[str, Any] = {"endpoint": endpoint}
     if cost is not None:
         body["cost"] = cost

@@ -5,6 +5,8 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic.fields import FieldInfo
 
 from . import tools as _tools_module
 from .registry import ROOT
@@ -16,26 +18,12 @@ mcp = FastMCP("vastai")
 _group_ops: dict[str, dict[str, Any]] = {}  # {group_name: {PascalName: fn}}
 _all_grouped: dict[str, str] = {}  # {PascalName: group_name}
 
+_SCHEMA_HINT = "Call operation='schema', params={'op': 'OpName'} for the full JSON Schema."
+_MAX_ECHOED_INPUT = 80
+
 
 def _to_pascal(name: str) -> str:
     return "".join(w.capitalize() for w in name.split("_"))
-
-
-def _parse_bool(val: Any, default: bool) -> bool:
-    if val is None:
-        return default
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, str):
-        return val.lower() in ("1", "true", "yes")
-    return bool(val)
-
-
-def _is_bool_hint(hint: Any) -> bool:
-    if hint is bool:
-        return True
-    args = typing.get_args(hint)
-    return bool in args if args else False
 
 
 def _is_union(origin: Any) -> bool:
@@ -43,55 +31,49 @@ def _is_union(origin: Any) -> bool:
     return origin is typing.Union or origin is types.UnionType
 
 
-def _get_literal_values(hint: Any) -> tuple[Any, ...] | None:
-    origin = typing.get_origin(hint)
-    if origin is typing.Literal:
-        return typing.get_args(hint)
-    # Handle Optional[Literal[...]] = Union[Literal[...], None]
-    if _is_union(origin):
-        for arg in typing.get_args(hint):
-            if typing.get_origin(arg) is typing.Literal:
-                return typing.get_args(arg)
-    return None
+# -- Params model --------------------
+
+def _build_params_model(fn: Any) -> type[BaseModel]:
+    """Pydantic model mirroring the signature: types, defaults, Annotated descriptions.
+
+    One declaration feeds three outputs: validation, help bullets, JSON Schema.
+    """
+    hints = typing.get_type_hints(fn, include_extras=True)
+    fields: dict[str, Any] = {}
+    for name, param in inspect.signature(fn).parameters.items():
+        default = ... if param.default is inspect.Parameter.empty else param.default
+        fields[name] = (hints.get(name, Any), default)
+    return create_model(
+        f"{_to_pascal(fn.__name__)}Params",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,
+    )
 
 
-def _coerce_call(fn: Any, params: dict[str, Any]) -> Any:
-    sig = inspect.signature(fn)
-    hints = typing.get_type_hints(fn)
+def _format_validation_error(error: ValidationError, op_name: str) -> str:
+    lines = [f"Invalid params for {op_name}:"]
+    for item in error.errors():
+        loc = ".".join(str(x) for x in item["loc"]) or "<root>"
+        got = repr(item.get("input"))
+        if len(got) > _MAX_ECHOED_INPUT:
+            got = got[: _MAX_ECHOED_INPUT - 3] + "..."
+        lines.append(f"  - {loc}: {item['msg']} (got {got})")
+    lines.append(f"Call operation='schema', params={{'op': {op_name!r}}} for the parameter spec.")
+    return "\n".join(lines)
 
-    # Reject unknown params
-    valid = set(sig.parameters.keys())
-    unknown = set(params.keys()) - valid
-    if unknown:
-        raise ValueError(
-            f"Unknown parameters: {sorted(unknown)}. "
-            f"Valid: {sorted(valid)}"
-        )
 
-    kwargs: dict[str, Any] = {}
-    for name, param in sig.parameters.items():
-        if name not in params:
-            continue
-        val = params[name]
-        hint = hints.get(name)
+def _validated_call(fn: Any, params: dict[str, Any], op_name: str) -> Any:
+    """Unknown keys, wrong types and missing required params all crash here, by field name."""
+    model: type[BaseModel] = fn._params_model
+    try:
+        validated = model.model_validate(params)
+    except ValidationError as e:
+        raise ValueError(_format_validation_error(e, op_name)) from e
+    # exclude_unset keeps the function's own defaults in charge of omitted params.
+    return fn(**validated.model_dump(exclude_unset=True))
 
-        # Validate Literal values
-        if hint and val is not None:
-            lit_vals = _get_literal_values(hint)
-            if lit_vals and val not in lit_vals:
-                raise ValueError(
-                    f"Invalid value {val!r} for '{name}'. "
-                    f"Accepted: {', '.join(repr(v) for v in lit_vals)}"
-                )
 
-        if hint and _is_bool_hint(hint) and not isinstance(val, bool):
-            default = param.default
-            if default is inspect.Parameter.empty or default is None:
-                default = False
-            val = _parse_bool(val, default)
-        kwargs[name] = val
-    return fn(**kwargs)
-
+# -- Help --------------------
 
 def _format_type(hint: Any) -> str:
     origin = typing.get_origin(hint)
@@ -114,55 +96,89 @@ def _format_type(hint: Any) -> str:
     return str(hint)
 
 
+def _format_param(name: str, field: FieldInfo) -> str:
+    """`name: type` when required, `name?: type[=default]` when the caller may omit it."""
+    type_str = _format_type(field.annotation)
+    if field.is_required():
+        return f"{name}: {type_str}"
+    if field.default is None:
+        return f"{name}?: {type_str}"
+    return f"{name}?: {type_str}={field.default!r}"
+
+
 def _build_help(group_name: str) -> str:
     """First docstring line is the op summary; the rest is indented under it.
 
-    Non-type constraints (formats, conditional rules, opaque-string formats)
-    live in the docstring body so callers learn from help, not from errors.
+    Per-param constraints come from Field(description=...) as bullets below the
+    signature, so callers learn them from help, not from errors.
     """
-    ops = _group_ops[group_name]
     lines = []
-    for pascal_name, fn in ops.items():
-        sig = inspect.signature(fn)
-        hints = typing.get_type_hints(fn)
-        parts = []
-        for pname in sig.parameters:
-            hint = hints.get(pname)
-            if hint:
-                parts.append(f"{pname}: {_format_type(hint)}")
-            else:
-                parts.append(pname)
+    for pascal_name, fn in _group_ops[group_name].items():
+        model: type[BaseModel] = fn._params_model
+        parts = [_format_param(n, f) for n, f in model.model_fields.items()]
         doc = inspect.getdoc(fn) or ""
         head, _, body = doc.partition("\n\n")
         head = " ".join(head.split())
         lines.append(f"  {pascal_name}({', '.join(parts)}) - {head}")
         for body_line in body.rstrip().splitlines():
             lines.append(f"    {body_line}" if body_line else "")
-    return f"{len(ops)} operations available:\n" + "\n".join(lines)
+        for name, field in model.model_fields.items():
+            if field.description:
+                lines.append(f"    {name}: {field.description}")
+    count = len(_group_ops[group_name])
+    return f"{count} operations available. {_SCHEMA_HINT}\n" + "\n".join(lines)
 
+
+# -- Schema --------------------
+
+def _build_schema(group_name: str, op_name: str | None) -> dict[str, Any]:
+    ops = _group_ops[group_name]
+    if op_name is None:
+        return {
+            "operations": sorted(ops),
+            "hint": "Pass params={'op': '<OpName>'} for the JSON Schema of one operation.",
+        }
+    if op_name not in ops:
+        raise ValueError(
+            f"Unknown operation {op_name!r} in {group_name}. Available: {sorted(ops)}"
+        )
+    fn = ops[op_name]
+    model: type[BaseModel] = fn._params_model
+    schema: dict[str, Any] = model.model_json_schema()
+    doc = inspect.getdoc(fn)
+    if doc:
+        schema["description"] = doc
+    return schema
+
+
+# -- Dispatch --------------------
 
 def _dispatch(operation: str, group_name: str, params: dict[str, Any]) -> Any:
+    if operation == "schema":
+        return _build_schema(group_name, params.get("op"))
     ops = _group_ops[group_name]
     if operation not in ops:
         if operation in _all_grouped:
             correct = _all_grouped[operation]
-            return {
-                "error": f"{operation} belongs to {correct}. "
-                f"Use {correct}() instead."
-            }
-        return {
-            "error": f"Unknown operation: {operation}. "
-            'Use operation="help" to list available operations.'
-        }
-    fn = ops[operation]
-    return _coerce_call(fn, params)
+            raise ValueError(
+                f"{operation!r} belongs to {correct!r}, not {group_name!r}. "
+                f"Call {correct}(operation={operation!r}, ...) instead."
+            )
+        raise ValueError(
+            f"Unknown operation {operation!r} in {group_name}. "
+            "Use operation='help' to list operations or operation='schema' for details."
+        )
+    return _validated_call(ops[operation], params, operation)
 
 
 def _register_tools() -> None:
     groups: dict[str, tuple[Any, dict[str, Any]]] = {}
+    # Any, not FunctionType: registration hangs attributes off the function object.
+    fn: Any
     for name, fn in inspect.getmembers(_tools_module, inspect.isfunction):
         if not hasattr(fn, "_mcp_group"):
             continue
+        fn._params_model = _build_params_model(fn)
         group = fn._mcp_group
         if group is ROOT:
             mcp.tool()(fn)
