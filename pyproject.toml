@@ -26,6 +26,9 @@ dev = [
     "ruff>=0.9",
 ]
 
+[tool.pytest.ini_options]
+markers = ["integration: goes to the live vast.ai API"]
+
 [tool.mypy]
 strict = true
 python_version = "3.12"
