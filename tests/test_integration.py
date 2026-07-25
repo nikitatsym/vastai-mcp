@@ -5,13 +5,17 @@ No API key means every test in this file fails - a skip would hide the API
 drift these tests exist to catch.
 """
 
+import atexit
+import contextlib
 import os
+import signal
 import time
 from typing import Any
 
 import httpx
 import pytest
 
+import dev
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.tools import (
@@ -382,3 +386,307 @@ class TestShowUser:
         assert isinstance(user["id"], int)
         assert isinstance(user["credit"], float)
         assert "email" in user
+
+
+# -- Paid rental harness --------------------
+
+LABEL_PREFIX = dev.SWEEP_LABEL_PREFIX
+
+# A ~250MB image keeps both the pull and the 8GB disk small, and nvidia/cuda declares
+# NVIDIA_DRIVER_CAPABILITIES, which is what makes nvidia-smi appear inside the container.
+E2E_IMAGE = "nvidia/cuda:12.0.1-base-ubuntu22.04"
+# The image is refused by the container runtime on a host whose driver is older than this.
+E2E_IMAGE_CUDA = 12.0
+# Entrypoint launch mode keeps the image's own entrypoint, so the container needs a command
+# that does not exit; the marker proves ShowLogs returns this container's stdout.
+E2E_RUNTYPE = "args"
+LOG_MARKER = "mcp-e2e-online"
+E2E_ARGS = f'bash -c "echo {LOG_MARKER}; sleep infinity"'
+
+DISK_GB = 8.0
+MAX_DPH = 0.15
+OFFER_PAGE = 20
+
+POLL_INTERVAL_S = 10.0
+RUNNING_TIMEOUT_S = 8 * 60.0
+RESULT_TIMEOUT_S = 2 * 60.0
+GONE_TIMEOUT_S = 2 * 60.0
+
+
+def _poll(
+    probe: Any, ready: Any, *, interval_s: float, timeout_s: float, what: str,
+    sleep: Any = time.sleep, clock: Any = time.monotonic,
+) -> Any:
+    """Polls probe() until ready() holds and returns that value.
+
+    On the cap it raises with the last value seen, so a stuck rental says what it was stuck
+    on instead of hanging the run until the CI timeout kills it.
+    """
+    deadline = clock() + timeout_s
+    while True:
+        value = probe()
+        if ready(value):
+            return value
+        if clock() >= deadline:
+            raise TimeoutError(f"{what}: gave up after {timeout_s:.0f}s, last seen {value!r}")
+        sleep(interval_s)
+
+
+def _pick_offer(offers: list[dict[str, Any]]) -> dict[str, Any]:
+    """The cheapest offer the rental can run on. Raises before anything is rented."""
+    usable = [
+        o for o in offers
+        if o["disk_space"] >= DISK_GB and o["cuda_max_good"] >= E2E_IMAGE_CUDA
+    ]
+    assert usable, (
+        f"none of the {len(offers)} cheapest offers has {DISK_GB:.0f}GB disk "
+        f"and CUDA {E2E_IMAGE_CUDA}"
+    )
+    cheapest = min(usable, key=lambda o: o["dph_total"])
+    assert cheapest["dph_total"] <= MAX_DPH, (
+        f"cheapest usable offer is ${cheapest['dph_total']:.4f}/hr, over the ${MAX_DPH} cap - "
+        f"renting nothing"
+    )
+    return cheapest
+
+
+class _Rental:
+    """One rented instance, destroyed at most once.
+
+    The flag is set before the call so a destroy that fails is not repeated by every
+    teardown layer in turn; a rental that survives it is left to dev.py sweep.
+    """
+
+    def __init__(self, live: Any, instance_id: int, label: str) -> None:
+        self._live = live
+        self.id = instance_id
+        self.label = label
+        self.destroyed = False
+
+    def destroy(self) -> Any:
+        if self.destroyed:
+            return None
+        self.destroyed = True
+        return self._live(tools.destroy_instance, id=self.id)
+
+
+class _Reaper:
+    """Teardown for a run that dies before the fixture finally: atexit covers a normal exit,
+    the handlers cover SIGINT and SIGTERM, which skip atexit entirely."""
+
+    def __init__(self) -> None:
+        self._rentals: list[_Rental] = []
+        self._installed = False
+
+    def watch(self, rental: _Rental) -> None:
+        if not self._installed:
+            self._install()
+        self._rentals.append(rental)
+
+    def _install(self) -> None:
+        atexit.register(self.reap)
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, self._on_signal)
+        self._installed = True
+
+    def reap(self) -> None:
+        while self._rentals:
+            self._rentals.pop().destroy()
+
+    def _on_signal(self, signum: int, frame: Any) -> None:
+        self.reap()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+_REAPER = _Reaper()
+
+
+@contextlib.contextmanager
+def _rented(create: Any, reaper: _Reaper) -> Any:
+    rental = create()
+    reaper.watch(rental)
+    try:
+        yield rental
+    finally:
+        rental.destroy()
+
+
+# -- Paid rental harness, offline --------------------
+
+class _FakeLive:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, dict[str, Any]]] = []
+
+    def __call__(self, fn, **kwargs):
+        self.calls.append((fn, kwargs))
+        return {"success": True}
+
+
+class _FakeProbe:
+    def __init__(self, values):
+        self.values = list(values)
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.values.pop(0)
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def _offer(**overrides):
+    offer = {"id": 1, "dph_total": 0.05, "disk_space": 100.0, "cuda_max_good": 12.8}
+    offer.update(overrides)
+    return offer
+
+
+class TestPoll:
+    def test_ready_on_the_first_probe_never_sleeps(self):
+        clock = _FakeClock()
+        value = _poll(
+            lambda: "running", lambda v: v == "running",
+            interval_s=POLL_INTERVAL_S, timeout_s=RUNNING_TIMEOUT_S, what="never",
+            sleep=clock.sleep, clock=clock,
+        )
+        assert value == "running"
+        assert clock.slept == []
+
+    def test_sleeps_the_interval_between_probes(self):
+        probe = _FakeProbe(["loading", "loading", "running"])
+        clock = _FakeClock()
+        value = _poll(
+            probe, lambda v: v == "running",
+            interval_s=POLL_INTERVAL_S, timeout_s=RUNNING_TIMEOUT_S, what="never",
+            sleep=clock.sleep, clock=clock,
+        )
+        assert value == "running"
+        assert clock.slept == [POLL_INTERVAL_S, POLL_INTERVAL_S]
+
+    def test_gives_up_at_the_cap(self):
+        """A rental that never comes up must fail on its own, well inside the CI timeout."""
+        clock = _FakeClock()
+        probe = _FakeProbe(["loading"] * 200)
+        with pytest.raises(TimeoutError, match="never ran: gave up after 480s"):
+            _poll(
+                probe, lambda v: v == "running",
+                interval_s=POLL_INTERVAL_S, timeout_s=RUNNING_TIMEOUT_S, what="never ran",
+                sleep=clock.sleep, clock=clock,
+            )
+        assert clock.now == RUNNING_TIMEOUT_S
+        assert probe.calls == int(RUNNING_TIMEOUT_S / POLL_INTERVAL_S) + 1
+
+    def test_the_message_carries_the_last_state(self):
+        clock = _FakeClock()
+        with pytest.raises(TimeoutError, match="last seen 'created'"):
+            _poll(
+                lambda: "created", lambda v: False,
+                interval_s=POLL_INTERVAL_S, timeout_s=POLL_INTERVAL_S, what="never ran",
+                sleep=clock.sleep, clock=clock,
+            )
+
+
+class TestPickOffer:
+    def test_takes_the_cheapest(self):
+        assert _pick_offer([_offer(id=2, dph_total=0.09), _offer(id=3, dph_total=0.04)])["id"] == 3
+
+    def test_skips_a_disk_too_small_for_the_image(self):
+        cheap_and_full = _offer(id=2, dph_total=0.01, disk_space=DISK_GB - 1)
+        assert _pick_offer([cheap_and_full, _offer(id=3)])["id"] == 3
+
+    def test_skips_a_host_whose_driver_predates_the_image(self):
+        cheap_and_old = _offer(id=2, dph_total=0.01, cuda_max_good=11.8)
+        assert _pick_offer([cheap_and_old, _offer(id=3)])["id"] == 3
+
+    def test_refuses_to_rent_over_the_cap(self):
+        """The price gate has to fail before CreateInstance, not after."""
+        with pytest.raises(AssertionError, match="over the .0.15 cap"):
+            _pick_offer([_offer(dph_total=MAX_DPH + 0.01)])
+
+    def test_refuses_when_nothing_fits(self):
+        with pytest.raises(AssertionError, match="8GB disk"):
+            _pick_offer([_offer(disk_space=1.0)])
+
+
+class TestTeardownLayers:
+    @pytest.fixture(autouse=True)
+    def quiet_signals(self, monkeypatch):
+        """Keeps the offline tests from touching the process-wide handlers."""
+        installed = {"atexit": [], "signals": {}}
+        monkeypatch.setattr(atexit, "register", installed["atexit"].append)
+        monkeypatch.setattr(signal, "signal", installed["signals"].__setitem__)
+        return installed
+
+    def test_destroy_is_idempotent(self):
+        live = _FakeLive()
+        rental = _Rental(live, 42, "mcp-e2e-x")
+        rental.destroy()
+        rental.destroy()
+        assert live.calls == [(tools.destroy_instance, {"id": 42})]
+
+    def test_the_body_raising_still_destroys(self):
+        """The whole point of the finally layer: a red test must not leave a GPU running."""
+        live, reaper = _FakeLive(), _Reaper()
+        with pytest.raises(RuntimeError, match="boom"), _rented(
+            lambda: _Rental(live, 42, "mcp-e2e-x"), reaper,
+        ):
+            raise RuntimeError("boom")
+        assert live.calls == [(tools.destroy_instance, {"id": 42})]
+
+    def test_watch_installs_atexit_and_signal_handlers(self, quiet_signals):
+        reaper = _Reaper()
+        reaper.watch(_Rental(_FakeLive(), 42, "mcp-e2e-x"))
+        assert quiet_signals["atexit"] == [reaper.reap]
+        assert set(quiet_signals["signals"]) == {signal.SIGINT, signal.SIGTERM}
+
+    def test_reap_destroys_what_the_fixture_never_reached(self):
+        live, reaper = _FakeLive(), _Reaper()
+        reaper.watch(_Rental(live, 42, "mcp-e2e-x"))
+        reaper.reap()
+        reaper.reap()
+        assert live.calls == [(tools.destroy_instance, {"id": 42})]
+
+    def test_a_signal_destroys_then_dies_by_default(self, quiet_signals, monkeypatch):
+        """Ctrl-C skips atexit, so the handler destroys first and only then lets the signal
+        through with its default disposition."""
+        killed = []
+        monkeypatch.setattr(os, "kill", lambda pid, signum: killed.append((pid, signum)))
+        live, reaper = _FakeLive(), _Reaper()
+        reaper.watch(_Rental(live, 42, "mcp-e2e-x"))
+        reaper._on_signal(signal.SIGTERM, None)
+        assert live.calls == [(tools.destroy_instance, {"id": 42})]
+        assert quiet_signals["signals"][signal.SIGTERM] is signal.SIG_DFL
+        assert killed == [(os.getpid(), signal.SIGTERM)]
+
+
+class TestE2eSweepsFirst:
+    def test_sweep_runs_before_the_suite(self, monkeypatch):
+        order = []
+        monkeypatch.setattr(dev, "sweep", lambda: order.append("sweep") or 0)
+        monkeypatch.setattr(dev, "_pytest", lambda *args: order.append(args) or 0)
+        assert dev.e2e() == 0
+        assert order == ["sweep", ("-m", "integration")]
+
+    def test_a_broken_sweep_aborts_the_run(self, monkeypatch):
+        """Renting on top of instances we failed to account for is how bills run away."""
+        def broken_sweep():
+            raise APIError(500, "GET", "/api/v0/instances/", {"msg": "down"})
+
+        def unreachable(*args):
+            raise AssertionError(f"pytest must not start after a broken sweep: {args}")
+
+        monkeypatch.setattr(dev, "sweep", broken_sweep)
+        monkeypatch.setattr(dev, "_pytest", unreachable)
+        with pytest.raises(APIError):
+            dev.e2e()

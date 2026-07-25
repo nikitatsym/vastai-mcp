@@ -40,7 +40,8 @@ def test() -> int:
 
 
 def e2e() -> int:
-    return _pytest("-m", "integration")
+    """Sweeps first: a rental left by a killed run keeps burning money through this one."""
+    return sweep() or _pytest("-m", "integration")
 
 
 def check() -> int:
