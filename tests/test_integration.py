@@ -411,6 +411,9 @@ E2E_ARGS = f'bash -c "nvidia-smi -L | tee /{PROBE_NAME}; echo {LOG_MARKER}; slee
 DISK_GB = 8.0
 MAX_DPH = 0.15
 OFFER_PAGE = 20
+# Cheapest hosts are the flakiest: one took the contract and never left cur_state=running
+# with actual_status=None. Each dud is destroyed before the next-cheapest offer gets a turn.
+RENT_ATTEMPTS = 3
 
 POLL_INTERVAL_S = 10.0
 RUNNING_TIMEOUT_S = 8 * 60.0
@@ -421,12 +424,14 @@ GONE_TIMEOUT_S = 2 * 60.0
 
 def _poll(
     probe: Any, ready: Any, *, interval_s: float, timeout_s: float, what: str,
-    sleep: Any = time.sleep, clock: Any = time.monotonic,
+    sleep: Any = time.sleep, clock: Any = time.monotonic, raise_on_timeout: bool = True,
 ) -> Any:
     """Polls probe() until ready() holds and returns that value.
 
     On the cap it raises with the last value seen, so a stuck rental says what it was stuck
-    on instead of hanging the run until the CI timeout kills it.
+    on instead of hanging the run until the CI timeout kills it. With raise_on_timeout=False
+    the cap returns None instead: the caller retries on another offer, and an except here
+    would swallow.
     """
     deadline = clock() + timeout_s
     while True:
@@ -434,12 +439,15 @@ def _poll(
         if ready(value):
             return value
         if clock() >= deadline:
+            if not raise_on_timeout:
+                return None
             raise TimeoutError(f"{what}: gave up after {timeout_s:.0f}s, last seen {value!r}")
         sleep(interval_s)
 
 
-def _pick_offer(offers: list[dict[str, Any]]) -> dict[str, Any]:
-    """The cheapest offer the rental can run on. Raises before anything is rented."""
+def _pick_offers(offers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Up to RENT_ATTEMPTS cheapest offers the rental can run on, every one under the price
+    cap. Raises before anything is rented."""
     usable = [
         o for o in offers
         if o["disk_space"] >= DISK_GB and o["cuda_max_good"] >= E2E_IMAGE_CUDA
@@ -448,12 +456,12 @@ def _pick_offer(offers: list[dict[str, Any]]) -> dict[str, Any]:
         f"none of the {len(offers)} cheapest offers has {DISK_GB:.0f}GB disk "
         f"and CUDA {E2E_IMAGE_CUDA}"
     )
-    cheapest = min(usable, key=lambda o: o["dph_total"])
-    assert cheapest["dph_total"] <= MAX_DPH, (
-        f"cheapest usable offer is ${cheapest['dph_total']:.4f}/hr, over the ${MAX_DPH} cap - "
+    usable.sort(key=lambda o: o["dph_total"])
+    assert usable[0]["dph_total"] <= MAX_DPH, (
+        f"cheapest usable offer is ${usable[0]['dph_total']:.4f}/hr, over the ${MAX_DPH} cap - "
         f"renting nothing"
     )
-    return cheapest
+    return [o for o in usable[:RENT_ATTEMPTS] if o["dph_total"] <= MAX_DPH]
 
 
 class _Rental:
@@ -602,38 +610,59 @@ class TestPoll:
                 sleep=clock.sleep, clock=clock,
             )
 
+    def test_timeout_returns_none_when_asked_not_to_raise(self):
+        clock = _FakeClock()
+        value = _poll(
+            lambda: "loading", lambda v: v == "running",
+            interval_s=POLL_INTERVAL_S, timeout_s=POLL_INTERVAL_S, what="never ran",
+            sleep=clock.sleep, clock=clock, raise_on_timeout=False,
+        )
+        assert value is None
 
-class TestPickOffer:
-    def test_takes_the_cheapest(self):
-        assert _pick_offer([_offer(id=2, dph_total=0.09), _offer(id=3, dph_total=0.04)])["id"] == 3
+
+class TestPickOffers:
+    def test_cheapest_first(self):
+        picked = _pick_offers([_offer(id=2, dph_total=0.09), _offer(id=3, dph_total=0.04)])
+        assert [o["id"] for o in picked] == [3, 2]
+
+    def test_caps_the_number_of_attempts(self):
+        offers = [_offer(id=n, dph_total=0.01 * n) for n in range(1, 6)]
+        assert [o["id"] for o in _pick_offers(offers)] == [1, 2, 3]
 
     def test_skips_a_disk_too_small_for_the_image(self):
         cheap_and_full = _offer(id=2, dph_total=0.01, disk_space=DISK_GB - 1)
-        assert _pick_offer([cheap_and_full, _offer(id=3)])["id"] == 3
+        assert [o["id"] for o in _pick_offers([cheap_and_full, _offer(id=3)])] == [3]
 
     def test_skips_a_host_whose_driver_predates_the_image(self):
         cheap_and_old = _offer(id=2, dph_total=0.01, cuda_max_good=11.8)
-        assert _pick_offer([cheap_and_old, _offer(id=3)])["id"] == 3
+        assert [o["id"] for o in _pick_offers([cheap_and_old, _offer(id=3)])] == [3]
 
     def test_refuses_to_rent_over_the_cap(self):
         """The price gate has to fail before CreateInstance, not after."""
         with pytest.raises(AssertionError, match="over the .0.15 cap"):
-            _pick_offer([_offer(dph_total=MAX_DPH + 0.01)])
+            _pick_offers([_offer(dph_total=MAX_DPH + 0.01)])
+
+    def test_over_cap_runners_up_are_not_attempted(self):
+        """The cap holds for every attempt, not only the first."""
+        picked = _pick_offers([_offer(id=1, dph_total=0.14), _offer(id=2, dph_total=0.16)])
+        assert [o["id"] for o in picked] == [1]
 
     def test_refuses_when_nothing_fits(self):
         with pytest.raises(AssertionError, match="8GB disk"):
-            _pick_offer([_offer(disk_space=1.0)])
+            _pick_offers([_offer(disk_space=1.0)])
 
 
+@pytest.fixture
+def quiet_signals(monkeypatch):
+    """Keeps the offline tests from touching the process-wide handlers."""
+    installed = {"atexit": [], "signals": {}}
+    monkeypatch.setattr(atexit, "register", installed["atexit"].append)
+    monkeypatch.setattr(signal, "signal", installed["signals"].__setitem__)
+    return installed
+
+
+@pytest.mark.usefixtures("quiet_signals")
 class TestTeardownLayers:
-    @pytest.fixture(autouse=True)
-    def quiet_signals(self, monkeypatch):
-        """Keeps the offline tests from touching the process-wide handlers."""
-        installed = {"atexit": [], "signals": {}}
-        monkeypatch.setattr(atexit, "register", installed["atexit"].append)
-        monkeypatch.setattr(signal, "signal", installed["signals"].__setitem__)
-        return installed
-
     def test_destroy_is_idempotent(self):
         live = _FakeLive()
         rental = _Rental(live, 42, "mcp-e2e-x")
@@ -676,6 +705,58 @@ class TestTeardownLayers:
         assert killed == [(os.getpid(), signal.SIGTERM)]
 
 
+class _FakeRentalApi:
+    """live() stand-in: contracts are handed out in order, the listing shows only ids told
+    to be up, destroys are recorded."""
+
+    def __init__(self, contracts: list[int], running: set[int]) -> None:
+        self.contracts = list(contracts)
+        self.running = running
+        self.destroyed: list[int] = []
+
+    def __call__(self, fn, **kwargs):
+        if fn is tools.create_instance:
+            return {"success": True, "new_contract": self.contracts.pop(0)}
+        if fn is tools.list_instances:
+            return {"instances": [
+                {"id": i, "actual_status": "running"} for i in sorted(self.running)
+            ]}
+        if fn is tools.destroy_instance:
+            self.destroyed.append(kwargs["id"])
+            return {"success": True}
+        raise AssertionError(f"unexpected live call: {fn.__name__}")
+
+
+@pytest.mark.usefixtures("quiet_signals")
+class TestRentRunning:
+    def test_first_offer_up_rents_once(self):
+        api = _FakeRentalApi(contracts=[101], running={101})
+        clock = _FakeClock()
+        rental = _rent_running(api, [_offer(id=1)], _Reaper(), sleep=clock.sleep, clock=clock)
+        assert rental.id == 101
+        assert api.destroyed == []
+
+    def test_dud_is_destroyed_and_the_next_offer_rented(self):
+        api = _FakeRentalApi(contracts=[101, 102], running={102})
+        clock = _FakeClock()
+        rental = _rent_running(
+            api, [_offer(id=1), _offer(id=2)], _Reaper(), sleep=clock.sleep, clock=clock,
+        )
+        assert rental.id == 102
+        assert api.destroyed == [101]
+
+    def test_all_duds_are_destroyed_and_the_failure_is_loud(self):
+        """The retry must not leak the rentals it gave up on."""
+        api = _FakeRentalApi(contracts=[101, 102, 103], running=set())
+        clock = _FakeClock()
+        with pytest.raises(TimeoutError, match="none of 3 offers"):
+            _rent_running(
+                api, [_offer(id=n) for n in (1, 2, 3)], _Reaper(),
+                sleep=clock.sleep, clock=clock,
+            )
+        assert api.destroyed == [101, 102, 103]
+
+
 class TestE2eSweepsFirst:
     def test_sweep_runs_before_the_suite(self, monkeypatch):
         order = []
@@ -715,17 +796,44 @@ def _find_instance(live, instance_id):
     return next((i for i in instances if i["id"] == instance_id), None)
 
 
+def _rent_running(
+    live: Any, offers: list[dict[str, Any]], reaper: _Reaper,
+    sleep: Any = time.sleep, clock: Any = time.monotonic,
+) -> _Rental:
+    """Rents offers cheapest-first until one reaches running; each dud is destroyed before
+    the next attempt. Only the running-wait retries: a failure later in the scenario means
+    the host worked, so re-renting would just hide it."""
+    for offer in offers:
+        label = f"{LABEL_PREFIX}{uuid.uuid4()}"
+        rental = _rent(live, offer, label)
+        reaper.watch(rental)
+        print(f"rented {rental.id} as {label} at ${offer['dph_total']:.4f}/hr")
+        record = _poll(
+            lambda instance_id=rental.id: _find_instance(live, instance_id),
+            lambda rec: rec is not None and rec["actual_status"] == "running",
+            interval_s=POLL_INTERVAL_S, timeout_s=RUNNING_TIMEOUT_S,
+            what="unreachable", sleep=sleep, clock=clock, raise_on_timeout=False,
+        )
+        if record is not None:
+            return rental
+        print(f"dud host: {rental.id} never reached running, destroying and moving on")
+        rental.destroy()
+    raise TimeoutError(
+        f"none of {len(offers)} offers reached actual_status=running "
+        f"within {RUNNING_TIMEOUT_S:.0f}s each"
+    )
+
+
 @pytest.fixture
 def rental(live):
-    """Rents the cheapest usable offer and destroys it however the test ends.
+    """Rents the cheapest usable offer, retrying dud hosts, and destroys whatever it rented
+    however the test ends.
 
-    The id is printed because pytest shows setup output on failure: a run that dies here
-    is exactly the one whose instance id you need.
+    Ids are printed because pytest shows setup output on failure: a run that dies here
+    is exactly the one whose instance ids you need.
     """
-    offer = _pick_offer(live(tools.search_offers, limit=OFFER_PAGE, order="dph_total")["offers"])
-    label = f"{LABEL_PREFIX}{uuid.uuid4()}"
-    with _rented(lambda: _rent(live, offer, label), _REAPER) as rented:
-        print(f"rented {rented.id} as {label} at ${offer['dph_total']:.4f}/hr")
+    offers = _pick_offers(live(tools.search_offers, limit=OFFER_PAGE, order="dph_total")["offers"])
+    with _rented(lambda: _rent_running(live, offers, _REAPER), _REAPER) as rented:
         yield rented
 
 
