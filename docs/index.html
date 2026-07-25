@@ -59,7 +59,7 @@
 
 <div class="card">
   <h1>Vast.ai MCP</h1>
-  <p class="subtitle">Search GPU offers, manage instances, and run commands on Vast.ai from Claude, Cursor, or any MCP client.</p>
+  <p class="subtitle">Search GPU offers, rent and manage instances, and read logs and billing on Vast.ai from Claude, Cursor, or any MCP client.</p>
 
   <p class="step">1. Get your API key from <a href="https://cloud.vast.ai/account/" target="_blank" rel="noopener">cloud.vast.ai/account</a></p>
   <p class="step">2. Paste it below to generate a config:</p>
@@ -70,6 +70,8 @@
   <pre id="configJson"></pre>
 
   <button class="btn btn-outline" id="copyBtn" onclick="copyConfig()">Copy to clipboard</button>
+
+  <p class="note">Four tools: <code style="color:#a5f3fc">vastai_read</code>, <code style="color:#a5f3fc">vastai_write</code>, <code style="color:#a5f3fc">vastai_execute</code>, <code style="color:#a5f3fc">vastai_delete</code>. Call any of them with <code style="color:#a5f3fc">operation="help"</code> for the operation list, or <code style="color:#a5f3fc">operation="schema"</code> for JSON Schema.</p>
 
   <p class="note">Paste into: <strong>Claude Desktop</strong> &mdash; <code style="color:#a5f3fc">claude_desktop_config.json</code> &bull; <strong>Cursor</strong> &mdash; <code style="color:#a5f3fc">.cursor/mcp.json</code> &bull; <strong>Claude Code</strong> &mdash; <code style="color:#a5f3fc">.claude/settings.json</code> or <code style="color:#a5f3fc">claude mcp add</code>. Global config (macOS): <code style="color:#a5f3fc">~/.claude.json</code> &rarr; <code style="color:#a5f3fc">"mcpServers"</code>.</p>
 

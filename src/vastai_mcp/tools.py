@@ -54,6 +54,12 @@ _SLIM_INSTANCE_FIELDS = {
 }
 
 
+_BENCHMARK_COLUMNS = frozenset({
+    "id", "last_update", "template_hash", "template_id", "launch_args", "type",
+    "machine_id", "contract_id", "num_gpus", "gpu_name", "image", "value", "details",
+})
+
+
 def _body(**fields: Any) -> dict[str, Any]:
     """Request body without unset fields: the API treats an absent key as 'leave alone'."""
     return {k: v for k, v in fields.items() if v is not None}
@@ -204,6 +210,28 @@ def _parse_date_ts(value: str | int, field: str) -> int:
         ) from None
 
 
+_DEFAULT_WINDOW_S = 30 * 24 * 60 * 60
+
+
+def _default_window(start_date: str | None, end_date: str | None) -> dict[str, int]:
+    """Epoch {gte, lte} window; the billing endpoints reject an unbounded range."""
+    end_ts = _parse_date_ts(end_date, "end_date") if end_date is not None \
+        else int(datetime.now(UTC).timestamp())
+    start_ts = _parse_date_ts(start_date, "start_date") if start_date is not None \
+        else end_ts - _DEFAULT_WINDOW_S
+    return {"gte": start_ts, "lte": end_ts}
+
+
+def _open_window(start_date: str | None, end_date: str | None) -> dict[str, int]:
+    """Epoch window with either end optional; empty when neither date is given."""
+    window: dict[str, int] = {}
+    if start_date is not None:
+        window["gte"] = _parse_date_ts(start_date, "start_date")
+    if end_date is not None:
+        window["lte"] = _parse_date_ts(end_date, "end_date")
+    return window
+
+
 # -- Validation helpers --------------------
 
 _GPU_RAM_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(GB|MB)\s*$", re.IGNORECASE)
@@ -314,6 +342,11 @@ def _fetch_result(result: dict[str, Any] | None) -> Any:
 _GPU_RAM_UNITS = "Units required: '24GB' or '24564MB'."
 _ORDER_FORMAT = "Column name, '-column' or 'column-desc'"
 _DATE_FORMAT = "'YYYY-MM-DD' or epoch seconds."
+_PAGE_TOKEN = "Pagination token from a previous call."
+_BENCHMARK_SELECT_COLS = (
+    "Columns to return, all of them when omitted. A name the API does not know comes back "
+    "as a null 'anon_1' column instead of an error, so names are checked here."
+)
 _WG_GPU_RAM = "String with units, e.g. '48GB' or '49152MB' (the API takes GB)."
 _WG_SEARCH_PARAMS = (
     "CLI-format string, e.g. 'gpu_name=RTX_3060 gpu_ram>=12GB verified=true "
@@ -333,40 +366,63 @@ _TEMPLATE_ENV = (
 
 # -- Groups --------------------
 
+# The caller is the one that has to back off, so the policy belongs in the tool description.
+_RATE_LIMIT_POLICY = (
+    "Rate limit: about 5 requests per 10 seconds per account, shared across every endpoint "
+    "and tightened under load. A 429 surfaces as an APIError whose body carries retry_after "
+    "(seconds to wait, the value varies) next to the retry-after and x-ratelimit-* headers. "
+    "This server never retries silently: sleep retry_after seconds, then repeat the call."
+)
+
+
+def _group_doc(summary: str, kind: str, example: str) -> str:
+    return (
+        f"{summary}\n\n"
+        f"Call with operation=\"help\" to list all available {kind} operations, or "
+        f"operation=\"schema\" for their JSON Schema.\n"
+        f"Otherwise pass the operation name and a JSON object with parameters.\n\n"
+        f"Example: {example}\n\n"
+        f"{_RATE_LIMIT_POLICY}"
+    )
+
+
 vastai_read = Group(
     "vastai_read",
-    "Query Vast.ai data (safe, read-only).\n\n"
-    "Call with operation=\"help\" to list all available read operations.\n"
-    "Otherwise pass the operation name and a JSON object with parameters.\n\n"
-    "Example: vastai_read(operation=\"SearchOffers\", "
-    "params={\"gpu_name\": \"RTX 4090\", \"limit\": 10})",
+    _group_doc(
+        "Query Vast.ai data (safe, read-only).",
+        "read",
+        "vastai_read(operation=\"SearchOffers\", "
+        "params={\"gpu_name\": \"RTX 4090\", \"limit\": 10})",
+    ),
 )
 
 vastai_write = Group(
     "vastai_write",
-    "Create or update Vast.ai resources (non-destructive).\n\n"
-    "Call with operation=\"help\" to list all available write operations.\n"
-    "Otherwise pass the operation name and a JSON object with parameters.\n\n"
-    "Example: vastai_write(operation=\"CreateInstance\", "
-    "params={\"id\": 12345, \"image\": \"pytorch/pytorch\", \"disk\": 20})",
+    _group_doc(
+        "Create or update Vast.ai resources (non-destructive).",
+        "write",
+        "vastai_write(operation=\"CreateInstance\", "
+        "params={\"id\": 12345, \"image\": \"pytorch/pytorch\", \"disk\": 20})",
+    ),
 )
 
 vastai_execute = Group(
     "vastai_execute",
-    "Execute actions on Vast.ai resources (reboot, run commands, copy data).\n\n"
-    "Call with operation=\"help\" to list all available execute operations.\n"
-    "Otherwise pass the operation name and a JSON object with parameters.\n\n"
-    "Example: vastai_execute(operation=\"ExecuteCommand\", "
-    "params={\"id\": 12345, \"command\": \"nvidia-smi\"})",
+    _group_doc(
+        "Execute actions on Vast.ai resources (reboot, disk commands, copy data).",
+        "execute",
+        "vastai_execute(operation=\"ExecuteCommand\", "
+        "params={\"id\": 12345, \"command\": \"ls -la /\"})",
+    ),
 )
 
 vastai_delete = Group(
     "vastai_delete",
-    "Delete Vast.ai resources (destructive, irreversible).\n\n"
-    "Call with operation=\"help\" to list all available delete operations.\n"
-    "Otherwise pass the operation name and a JSON object with parameters.\n\n"
-    "Example: vastai_delete(operation=\"DestroyInstance\", "
-    "params={\"id\": 12345})",
+    _group_doc(
+        "Delete Vast.ai resources (destructive, irreversible).",
+        "delete",
+        "vastai_delete(operation=\"DestroyInstance\", params={\"id\": 12345})",
+    ),
 )
 
 
@@ -482,12 +538,53 @@ def search_templates(
 
 
 @_op(vastai_read)
-def search_benchmarks(query: str | None = None) -> Any:
-    """Search benchmarks."""
-    params: dict[str, str] = {}
-    if query is not None:
-        params["q"] = query
-    return _ok(_get_client().get("/api/v0/benchmarks/", params=params))
+def search_benchmarks(
+    machine_id: int | None = None,
+    contract_id: int | None = None,
+    gpu_name: Annotated[str | None, Field(description=(
+        "Either spelling works ('RTX 4090' or 'RTX_4090'); ListGpuNames has the catalog."
+    ))] = None,
+    num_gpus: int | None = None,
+    image: Annotated[str | None, Field(description="Exact image name, not a substring.")] = None,
+    limit: Annotated[int, Field(description=(
+        "Applied here, not by the API: the endpoint ignores limit and answers with every row "
+        "that matches."
+    ))] = 20,
+    select_cols: Annotated[
+        list[str] | None, Field(description=_BENCHMARK_SELECT_COLS),
+    ] = None,
+) -> Any:
+    """Search machine benchmarks. At least one filter is required.
+
+    Unfiltered the endpoint answers with ~105k rows and ignores limit, so the filters are
+    what keeps the response small."""
+    if gpu_name is not None:
+        gpu_name = _resolve_gpu_name(gpu_name)
+    filters = {
+        k: {"eq": v} for k, v in (
+            ("machine_id", machine_id), ("contract_id", contract_id),
+            ("gpu_name", gpu_name), ("num_gpus", num_gpus), ("image", image),
+        ) if v is not None
+    }
+    if not filters:
+        raise ValueError(
+            "SearchBenchmarks needs at least one of machine_id, contract_id, gpu_name, "
+            "num_gpus or image: unfiltered the endpoint returns ~105k rows and ignores limit."
+        )
+    if select_cols is not None:
+        unknown = sorted(set(select_cols) - _BENCHMARK_COLUMNS)
+        if unknown:
+            raise ValueError(
+                f"select_cols={unknown} are not benchmark columns. "
+                f"Valid: {', '.join(sorted(_BENCHMARK_COLUMNS))}"
+            )
+    rows = _get_client().get("/api/v0/benchmarks/", params={
+        "select_cols": json.dumps(list(select_cols) if select_cols else ["*"]),
+        "select_filters": json.dumps(filters),
+    })
+    if isinstance(rows, list):
+        return rows[:int(limit)]
+    return _ok(rows)
 
 
 @_op(vastai_read)
@@ -544,14 +641,33 @@ def show_deposit(id: int) -> Any:
 
 
 @_op(vastai_read)
-def search_invoices(type: str | None = None, select_filters: str | None = None) -> Any:
-    """Search invoices."""
-    params: dict[str, str] = {}
-    if type is not None:
-        params["type"] = type
-    if select_filters is not None:
-        params["select_filters"] = select_filters
-    return _ok(_get_client().get("/api/v0/invoices/", params=params))
+def search_invoices(
+    start_date: Annotated[str | None, Field(
+        description=f"{_DATE_FORMAT} Open-ended when omitted.",
+    )] = None,
+    end_date: Annotated[str | None, Field(
+        description=f"{_DATE_FORMAT} Open-ended when omitted.",
+    )] = None,
+    is_credit: Annotated[bool | None, Field(
+        description="True keeps balance top-ups only, False keeps everything else.",
+    )] = None,
+    service: Annotated[str | None, Field(
+        description="Payment service, e.g. 'stripe_payments'.",
+    )] = None,
+    limit: int = 20,
+) -> Any:
+    """Search invoices (v0 API). ShowInvoicesV1 is the paginated view of the same data."""
+    filters: dict[str, Any] = {}
+    when = _open_window(start_date, end_date)
+    if when:
+        filters["when"] = when
+    if is_credit is not None:
+        filters["is_credit"] = {"eq": is_credit}
+    if service is not None:
+        filters["service"] = {"eq": service}
+    return _ok(_get_client().get("/api/v0/invoices/", params={
+        "select_filters": json.dumps(filters), "limit": int(limit),
+    }))
 
 
 @_op(vastai_read)
@@ -564,25 +680,50 @@ def show_invoices_v1(
     )] = None,
     latest_first: bool = True,
     limit: int = 20,
-    next_token: Annotated[str | None, Field(
-        description="Pagination token from a previous call.",
-    )] = None,
+    next_token: Annotated[str | None, Field(description=_PAGE_TOKEN)] = None,
 ) -> Any:
     """Get invoices (v1 API, paginated).
 
     The range defaults to the last 30 days - the API rejects an unbounded one."""
-    end_ts = _parse_date_ts(end_date, "end_date") if end_date is not None \
-        else int(datetime.now(UTC).timestamp())
-    start_ts = _parse_date_ts(start_date, "start_date") if start_date is not None \
-        else end_ts - 30 * 24 * 60 * 60
     params: dict[str, Any] = {
-        "select_filters": json.dumps({"when": {"gte": start_ts, "lte": end_ts}}),
+        "select_filters": json.dumps({"when": _default_window(start_date, end_date)}),
         "limit": int(limit),
         "latest_first": "true" if latest_first else "false",
     }
     if next_token is not None:
         params["after_token"] = next_token
     return _ok(_get_client().get("/api/v1/invoices/", params=params))
+
+
+@_op(vastai_read)
+def show_charges(
+    start_date: Annotated[str | None, Field(
+        description=f"{_DATE_FORMAT} Defaults to 30 days before end_date.",
+    )] = None,
+    end_date: Annotated[str | None, Field(
+        description=f"{_DATE_FORMAT} Defaults to now.",
+    )] = None,
+    type: Annotated[Literal["instance", "volume", "serverless"] | None, Field(
+        description="Charge kind; all three when omitted.",
+    )] = None,
+    latest_first: bool = True,
+    limit: Annotated[int, Field(description="The API caps this at 100.")] = 20,
+    next_token: Annotated[str | None, Field(description=_PAGE_TOKEN)] = None,
+) -> Any:
+    """Get billed charges day by day, each with its gpu, disk and bandwidth items.
+
+    The range defaults to the last 30 days - the API rejects a request without both ends."""
+    filters: dict[str, Any] = {"day": _default_window(start_date, end_date)}
+    if type is not None:
+        filters["type"] = {"in": [type]}
+    params: dict[str, Any] = {
+        "select_filters": json.dumps(filters),
+        "limit": int(limit),
+        "latest_first": "true" if latest_first else "false",
+    }
+    if next_token is not None:
+        params["after_token"] = next_token
+    return _ok(_get_client().get("/api/v0/charges/", params=params))
 
 
 @_op(vastai_read)
@@ -974,8 +1115,16 @@ def recycle_instance(id: int) -> Any:
 
 
 @_op(vastai_execute)
-def execute_command(id: int, command: str) -> Any:
-    """Execute a command on an instance (async - polls S3 up to ~9s for result)."""
+def execute_command(
+    id: int,
+    command: Annotated[str, Field(description=(
+        "Only 'ls', 'rm' and 'du' are accepted; anything else answers 400 invalid_args."
+    ))],
+) -> Any:
+    """Run a disk command on a STOPPED instance (async - polls S3 up to ~9s for result).
+
+    This is vast.ai's disk API, not a remote shell: on a running instance it answers 400 and
+    points at ssh. Stop the instance with ManageInstance(state='stopped') first."""
     result = _get_client().put(
         f"/api/v0/instances/command/{id}/", json={"command": command},
     )

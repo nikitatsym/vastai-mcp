@@ -22,12 +22,19 @@ MCP server for Vast.ai GPU marketplace.
 
 | Tool | Description |
 |------|-------------|
-| `vastai_read` | Search offers, list instances, get logs (read-only) |
+| `vastai_read` | Search offers, list instances, read logs and billing (read-only) |
 | `vastai_write` | Create instances, templates, endpoints (non-destructive) |
-| `vastai_execute` | Reboot, run commands, copy data |
+| `vastai_execute` | Reboot, disk commands, copy data |
 | `vastai_delete` | Destroy instances, delete resources (destructive) |
 
-Call any group with `operation="help"` to list available operations.
+Call any group with `operation="help"` to list available operations, or with
+`operation="schema"` (add `params={"op": "<OpName>"}`) for their JSON Schema.
+
+Vast.ai allows roughly 5 requests per 10 seconds per account. A 429 comes back as an
+error carrying `retry_after`; the server never retries it silently, the caller waits.
+
+`ExecuteCommand` is vast.ai's disk API rather than a remote shell: it takes only `ls`,
+`rm` and `du`, and only while the instance is stopped.
 
 ## Development
 

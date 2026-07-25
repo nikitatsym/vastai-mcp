@@ -19,6 +19,7 @@ from vastai_mcp.server import (
     _to_pascal,
 )
 from vastai_mcp.tools import (
+    _BENCHMARK_COLUMNS,
     _build_offer_query,
     _parse_date_ts,
     _parse_order,
@@ -29,9 +30,11 @@ from vastai_mcp.tools import (
     _resolve_gpu_name,
     _validate_env,
     _validate_search_params,
+    search_benchmarks,
     search_invoices,
     search_offers,
     search_templates,
+    show_charges,
     show_invoices_v1,
     vastai_version,
 )
@@ -280,7 +283,7 @@ class TestBuildHelp:
 
     def test_shows_operation_count(self):
         h = _build_help("vastai_read")
-        assert h.startswith("24 operations available.")
+        assert h.startswith("25 operations available.")
 
     def test_points_at_schema(self):
         h = _build_help("vastai_read")
@@ -720,6 +723,54 @@ class TestInvoicesRequest:
         search_invoices()
         assert client.calls[0][1] == "/api/v0/invoices/"
 
+    def test_v0_no_filters_sends_empty_object(self, fake_client):
+        client = fake_client([])
+        search_invoices()
+        assert json.loads(client.calls[0][2]["params"]["select_filters"]) == {}
+
+    def test_v0_dates_become_a_when_window(self, fake_client):
+        client = fake_client([])
+        search_invoices(start_date="2026-01-01", end_date="2026-01-08")
+        filters = json.loads(client.calls[0][2]["params"]["select_filters"])
+        assert filters["when"] == {"gte": 1767225600, "lte": 1767830400}
+
+    def test_v0_one_sided_window_stays_one_sided(self, fake_client):
+        """Unlike v1, the v0 endpoint takes an open range - do not invent the other end."""
+        client = fake_client([])
+        search_invoices(start_date="2026-01-01")
+        filters = json.loads(client.calls[0][2]["params"]["select_filters"])
+        assert filters["when"] == {"gte": 1767225600}
+
+    def test_v0_flag_and_service_filters(self, fake_client):
+        client = fake_client([])
+        search_invoices(is_credit=True, service="stripe_payments")
+        filters = json.loads(client.calls[0][2]["params"]["select_filters"])
+        assert filters == {
+            "is_credit": {"eq": True}, "service": {"eq": "stripe_payments"},
+        }
+
+    def test_v0_limit_is_sent(self, fake_client):
+        """The v0 endpoint honors limit, unlike /benchmarks/."""
+        client = fake_client([])
+        search_invoices(limit=3)
+        assert client.calls[0][2]["params"]["limit"] == 3
+
+    def test_v0_bad_date_crashes(self, fake_client):
+        fake_client([])
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            search_invoices(start_date="last tuesday")
+
+    def test_dead_type_param_is_rejected(self):
+        """type= reached the API and was ignored there; a silent no-op must now crash."""
+        with pytest.raises(ValueError, match="type: Extra inputs are not permitted"):
+            _dispatch("SearchInvoices", "vastai_read", {"type": "payment"})
+
+    def test_dead_select_filters_param_is_rejected(self):
+        with pytest.raises(ValueError, match="select_filters: Extra inputs are not permitted"):
+            _dispatch(
+                "SearchInvoices", "vastai_read", {"select_filters": '{"when": {"gte": 1}}'},
+            )
+
     def test_v1_defaults_to_date_range(self, fake_client):
         """API answers 'Invalid date range' when no range is sent."""
         client = fake_client({"results": []})
@@ -737,6 +788,194 @@ class TestInvoicesRequest:
         fake_client({"results": []})
         with pytest.raises(ValueError, match="YYYY-MM-DD"):
             show_invoices_v1(start_date="yesterday")
+
+
+# -- SearchBenchmarks --------------------
+
+class TestSearchBenchmarksRequest:
+    def test_legacy_query_param_is_rejected(self):
+        """?q= answered 400 for every value it was ever given; the param is gone."""
+        with pytest.raises(ValueError, match="query: Extra inputs are not permitted"):
+            _dispatch("SearchBenchmarks", "vastai_read", {"query": "score>1"})
+
+    def test_no_filter_crashes_before_the_request(self, fake_client):
+        """Unfiltered the endpoint returns ~105k rows and ignores limit."""
+        client = fake_client([])
+        with pytest.raises(ValueError, match="at least one of machine_id"):
+            search_benchmarks()
+        assert client.calls == []
+
+    def test_machine_id_becomes_an_eq_filter(self, fake_client):
+        client = fake_client([])
+        search_benchmarks(machine_id=11)
+        params = client.calls[0][2]["params"]
+        assert json.loads(params["select_filters"]) == {"machine_id": {"eq": 11}}
+        assert client.calls[0][1] == "/api/v0/benchmarks/"
+
+    def test_every_filter_reaches_the_query(self, fake_client, gpu_catalog):
+        client = fake_client([])
+        search_benchmarks(
+            machine_id=11, contract_id=42, gpu_name="RTX 4090", num_gpus=2, image="cuda",
+        )
+        assert json.loads(client.calls[0][2]["params"]["select_filters"]) == {
+            "machine_id": {"eq": 11}, "contract_id": {"eq": 42},
+            "gpu_name": {"eq": "RTX 4090"}, "num_gpus": {"eq": 2}, "image": {"eq": "cuda"},
+        }
+
+    def test_gpu_name_spelling_is_resolved(self, fake_client, gpu_catalog):
+        """A name the catalog does not carry would filter to zero rows in silence."""
+        client = fake_client([])
+        search_benchmarks(gpu_name="RTX_4090")
+        filters = json.loads(client.calls[0][2]["params"]["select_filters"])
+        assert filters["gpu_name"] == {"eq": "RTX 4090"}
+
+    def test_unknown_gpu_name_crashes(self, fake_client, gpu_catalog):
+        fake_client([])
+        with pytest.raises(ValueError, match="not a known GPU"):
+            search_benchmarks(gpu_name="RTX 9090")
+
+    def test_select_cols_defaults_to_all(self, fake_client):
+        client = fake_client([])
+        search_benchmarks(machine_id=11)
+        assert json.loads(client.calls[0][2]["params"]["select_cols"]) == ["*"]
+
+    def test_select_cols_are_passed_through(self, fake_client):
+        client = fake_client([])
+        search_benchmarks(machine_id=11, select_cols=["id", "value"])
+        assert json.loads(client.calls[0][2]["params"]["select_cols"]) == ["id", "value"]
+
+    def test_unknown_select_col_crashes(self, fake_client):
+        """The API answers an unknown column with a null 'anon_1' instead of an error."""
+        client = fake_client([])
+        with pytest.raises(ValueError, match="are not benchmark columns"):
+            search_benchmarks(machine_id=11, select_cols=["id", "score"])
+        assert client.calls == []
+
+    def test_unknown_select_col_lists_the_valid_ones(self, fake_client):
+        fake_client([])
+        with pytest.raises(ValueError, match="machine_id"):
+            search_benchmarks(machine_id=11, select_cols=["score"])
+
+    def test_limit_is_applied_here(self, fake_client):
+        """The server ignores limit, so cutting the list is this side's job."""
+        fake_client([{"id": n} for n in range(50)])
+        assert len(search_benchmarks(machine_id=11, limit=5)) == 5
+
+    def test_limit_never_reaches_the_api(self, fake_client):
+        """Sending it would only suggest the endpoint honors it."""
+        client = fake_client([])
+        search_benchmarks(machine_id=11, limit=5)
+        assert "limit" not in client.calls[0][2]["params"]
+
+    def test_column_catalog_covers_the_filterable_names(self):
+        assert {"machine_id", "contract_id", "gpu_name", "num_gpus", "image"} <= (
+            _BENCHMARK_COLUMNS
+        )
+
+
+# -- ShowCharges --------------------
+
+class TestShowChargesRequest:
+    def test_path_and_default_window(self, fake_client):
+        """A range with only one end answers 400 'Must provide both'."""
+        client = fake_client({"results": []})
+        show_charges()
+        assert client.calls[0][1] == "/api/v0/charges/"
+        day = json.loads(client.calls[0][2]["params"]["select_filters"])["day"]
+        assert day["lte"] - day["gte"] == 30 * 24 * 60 * 60
+
+    def test_explicit_dates(self, fake_client):
+        client = fake_client({"results": []})
+        show_charges(start_date="2026-01-01", end_date="2026-01-08")
+        day = json.loads(client.calls[0][2]["params"]["select_filters"])["day"]
+        assert day == {"gte": 1767225600, "lte": 1767830400}
+
+    def test_type_becomes_an_in_filter(self, fake_client):
+        client = fake_client({"results": []})
+        show_charges(type="volume")
+        filters = json.loads(client.calls[0][2]["params"]["select_filters"])
+        assert filters["type"] == {"in": ["volume"]}
+
+    def test_type_is_absent_by_default(self, fake_client):
+        client = fake_client({"results": []})
+        show_charges()
+        assert "type" not in json.loads(client.calls[0][2]["params"]["select_filters"])
+
+    def test_unknown_type_crashes(self):
+        """The API answers an unknown kind with 400 'contains invalid value(s)'."""
+        with pytest.raises(ValueError, match="'instance', 'volume' or 'serverless'"):
+            _dispatch("ShowCharges", "vastai_read", {"type": "gpu"})
+
+    def test_latest_first_is_a_string_flag(self, fake_client):
+        client = fake_client({"results": []})
+        show_charges(latest_first=False)
+        assert client.calls[0][2]["params"]["latest_first"] == "false"
+
+    def test_next_token_is_sent_as_after_token(self, fake_client):
+        client = fake_client({"results": []})
+        show_charges(next_token="eyJ2YWx1ZXMiOiB7ImlkIjogMX19")
+        assert client.calls[0][2]["params"]["after_token"] == "eyJ2YWx1ZXMiOiB7ImlkIjogMX19"
+
+    def test_no_token_no_key(self, fake_client):
+        client = fake_client({"results": []})
+        show_charges()
+        assert "after_token" not in client.calls[0][2]["params"]
+
+    def test_bad_date_crashes(self, fake_client):
+        fake_client({"results": []})
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            show_charges(end_date="tomorrow")
+
+    def test_registered_in_the_read_group(self):
+        assert _all_grouped["ShowCharges"] == "vastai_read"
+
+
+# -- documented contracts --------------------
+
+def _group_docs():
+    """Derived from the registry, so a group added later is covered without a test edit."""
+    return {
+        fn._mcp_group.name: fn._mcp_group.doc
+        for ops in _group_ops.values() for fn in ops.values()
+    }
+
+
+class TestGroupDocs:
+    """The 429 policy is a contract for the calling agent, so it lives in the tool doc."""
+
+    def test_every_group_states_the_observed_limit(self):
+        for group_name, doc in _group_docs().items():
+            assert "5 requests per 10 seconds" in doc, group_name
+
+    def test_every_group_names_retry_after(self):
+        for group_name, doc in _group_docs().items():
+            assert "retry_after" in doc, group_name
+
+    def test_every_group_says_the_server_does_not_retry(self):
+        for group_name, doc in _group_docs().items():
+            assert "never retries silently" in doc, group_name
+
+    def test_every_group_points_at_schema(self):
+        for group_name, doc in _group_docs().items():
+            assert 'operation="schema"' in doc, group_name
+
+    def test_execute_example_uses_an_accepted_command(self):
+        """'nvidia-smi' was the old example and the API refuses it."""
+        doc = _group_docs()["vastai_execute"]
+        assert "nvidia-smi" not in doc
+
+
+class TestExecuteCommandDoc:
+    def test_allowed_commands_are_a_field_constraint(self):
+        model = _build_params_model(tools.execute_command)
+        description = model.model_fields["command"].description
+        assert "'ls', 'rm' and 'du'" in description
+
+    def test_stopped_only_is_in_the_docstring(self):
+        """Not a parameter constraint: it is about the instance, not the argument."""
+        doc = tools.execute_command.__doc__
+        assert "STOPPED" in doc
+        assert "ssh" in doc
 
 
 # -- client error handling --------------------

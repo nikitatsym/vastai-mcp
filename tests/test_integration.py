@@ -8,6 +8,7 @@ API drift these tests exist to catch.
 
 import atexit
 import contextlib
+import json
 import os
 import signal
 import time
@@ -21,6 +22,7 @@ import dev
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.tools import (
+    _BENCHMARK_COLUMNS,
     _SLIM_INSTANCE_FIELDS,
     _SLIM_OFFER_FIELDS,
     _SLIM_TEMPLATE_FIELDS,
@@ -252,6 +254,20 @@ def templates_named(live):
     )["templates"]
 
 
+# Machine 11's benchmark rows are dated 2018 and have not moved since, which is what makes
+# the machine usable as a fixture.
+BENCHMARK_MACHINE_ID = 11
+BENCHMARK_PAGE = 100
+BENCHMARK_LIMIT = 2
+
+
+@pytest.fixture(scope="session")
+def benchmarks_of_machine(live):
+    return live(
+        tools.search_benchmarks, machine_id=BENCHMARK_MACHINE_ID, limit=BENCHMARK_PAGE,
+    )
+
+
 # -- SearchOffers --------------------
 
 class TestSearchOffers:
@@ -342,6 +358,94 @@ class TestShowInvoicesV1:
         assert result["results"] == []
 
 
+# -- SearchInvoices --------------------
+
+INVOICE_COLUMNS = {"id", "when", "amount_cents", "is_credit", "service"}
+INVOICE_WINDOW_START = "2025-07-01"
+INVOICE_PAGE = 100
+
+
+def _invoices_query(**query: Any) -> Any:
+    """Bypasses SearchInvoices to probe the endpoint contract its typed params rest on."""
+    return tools._get_client().get("/api/v0/invoices/", params=query)
+
+
+@pytest.fixture(scope="session")
+def invoices_all(live):
+    return live(tools.search_invoices, limit=INVOICE_PAGE)
+
+
+class TestSearchInvoices:
+    def test_rows_carry_the_billing_columns(self, invoices_all):
+        assert invoices_all, "account has no invoice at all"
+        assert INVOICE_COLUMNS <= set(invoices_all[0])
+
+    def test_limit_is_honored_by_the_api(self, live, invoices_all):
+        """Unlike /benchmarks/, this endpoint cuts the result itself."""
+        assert len(invoices_all) > 1
+        assert len(live(tools.search_invoices, limit=1)) == 1
+
+    def test_window_narrows(self, live, invoices_all):
+        narrowed = live(
+            tools.search_invoices, start_date=INVOICE_WINDOW_START, limit=INVOICE_PAGE,
+        )
+        assert 0 < len(narrowed) < len(invoices_all)
+
+    def test_flag_filter_reaches_the_api(self, live, invoices_all):
+        credits = live(tools.search_invoices, is_credit=True, limit=INVOICE_PAGE)
+        assert all(invoice["is_credit"] for invoice in credits)
+        assert len(credits) <= len(invoices_all)
+
+    def test_the_removed_type_param_is_still_a_no_op(self, live, invoices_all):
+        """It was dropped because the API ignores it - a value it cannot know changes
+        nothing. If this ever goes red, type became real and belongs back in the signature."""
+        ignored = live(
+            _invoices_query,
+            type="no_such_type", limit=INVOICE_PAGE, select_filters=json.dumps({}),
+        )
+        assert [row["id"] for row in ignored] == [row["id"] for row in invoices_all]
+
+    def test_a_bogus_filter_column_is_refused_loudly(self, live):
+        """select_filters is validated upstream, which is why typed params can build it."""
+        with pytest.raises(APIError) as excinfo:
+            live(_invoices_query, select_filters=json.dumps({"bogus": {"eq": 1}}))
+        assert excinfo.value.status == 400
+
+
+# -- ShowCharges --------------------
+
+class TestShowCharges:
+    def test_default_range_succeeds(self, live):
+        """A range missing either end answers 400 'Must provide both'."""
+        result = live(tools.show_charges)
+        assert result["success"] is True
+        assert result["count"] == len(result["results"])
+        assert isinstance(result["total"], int)
+
+    def test_rows_carry_amounts_and_nested_items(self, live):
+        result = live(tools.show_charges, limit=5)
+        assert result["results"], "account has no charge in the last 30 days"
+        for charge in result["results"]:
+            assert {"start", "end", "type", "amount", "items"} <= set(charge)
+            assert isinstance(charge["amount"], (int, float))
+
+    def test_type_filter_narrows_to_one_kind(self, live):
+        result = live(tools.show_charges, type="instance", limit=5)
+        assert result["success"] is True
+        assert all(charge["type"] == "instance" for charge in result["results"])
+
+    def test_paging_moves_forward(self, live):
+        first = live(tools.show_charges, limit=1)
+        assert first["next_token"], "account has fewer than two charges to page through"
+        second = live(tools.show_charges, limit=1, next_token=first["next_token"])
+        assert second["results"][0]["source"] != first["results"][0]["source"]
+
+    def test_window_before_the_account_existed_is_empty(self, live):
+        result = live(tools.show_charges, start_date="2000-01-01", end_date="2001-01-01")
+        assert result["success"] is True
+        assert result["results"] == []
+
+
 # -- Remaining read operations --------------------
 
 class TestListInstances:
@@ -362,10 +466,33 @@ class TestSearchVolumes:
 
 
 class TestSearchBenchmarks:
-    def test_rows_carry_machine_and_value(self, live):
-        rows = live(tools.search_benchmarks)
+    def test_machine_filter_returns_only_that_machine(self, benchmarks_of_machine):
+        assert benchmarks_of_machine
+        assert {row["machine_id"] for row in benchmarks_of_machine} == {BENCHMARK_MACHINE_ID}
+        assert {"id", "machine_id", "value"} <= set(benchmarks_of_machine[0])
+
+    def test_column_catalog_matches_the_api(self, benchmarks_of_machine):
+        """select_cols validates against this set, and an unknown name is answered with a
+        null 'anon_1' column rather than an error - so the set has to track the API."""
+        for row in benchmarks_of_machine:
+            assert set(row) == set(_BENCHMARK_COLUMNS)
+
+    def test_select_cols_narrows_the_row(self, live):
+        rows = live(
+            tools.search_benchmarks,
+            machine_id=BENCHMARK_MACHINE_ID, select_cols=["id", "value"],
+        )
         assert rows
-        assert {"id", "machine_id", "value"} <= set(rows[0])
+        assert set(rows[0]) == {"id", "value"}
+
+    def test_limit_cuts_what_the_api_would_not(self, live, benchmarks_of_machine):
+        """The endpoint ignores limit, so the cut has to happen after the response."""
+        assert len(benchmarks_of_machine) > BENCHMARK_LIMIT
+        rows = live(
+            tools.search_benchmarks,
+            machine_id=BENCHMARK_MACHINE_ID, limit=BENCHMARK_LIMIT,
+        )
+        assert len(rows) == BENCHMARK_LIMIT
 
 
 class TestListEndpoints:
