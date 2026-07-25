@@ -1,4 +1,5 @@
 import inspect
+import types
 import typing
 from collections.abc import Callable
 from typing import Any
@@ -37,12 +38,17 @@ def _is_bool_hint(hint: Any) -> bool:
     return bool in args if args else False
 
 
+def _is_union(origin: Any) -> bool:
+    # Before 3.14 `str | None` has origin types.UnionType; typing.Union only since 3.14.
+    return origin is typing.Union or origin is types.UnionType
+
+
 def _get_literal_values(hint: Any) -> tuple[Any, ...] | None:
     origin = typing.get_origin(hint)
     if origin is typing.Literal:
         return typing.get_args(hint)
     # Handle Optional[Literal[...]] = Union[Literal[...], None]
-    if origin is typing.Union:
+    if _is_union(origin):
         for arg in typing.get_args(hint):
             if typing.get_origin(arg) is typing.Literal:
                 return typing.get_args(arg)
@@ -92,7 +98,7 @@ def _format_type(hint: Any) -> str:
     if origin is typing.Literal:
         vals = typing.get_args(hint)
         return "|".join(str(v) for v in vals)
-    if origin is typing.Union:
+    if _is_union(origin):
         args = [a for a in typing.get_args(hint) if a is not type(None)]
         if len(args) == 1:
             return _format_type(args[0])
