@@ -37,7 +37,7 @@ Every gate runs through `dev.py`; CI calls the same commands.
 |---------|------|
 | `uv run python dev.py lint` | ruff, mypy, tackbox |
 | `uv run python dev.py test` | all tests, live ones included |
-| `uv run python dev.py e2e` | live tests only (`integration` marker) |
+| `uv run python dev.py e2e` | sweep, then live tests only (`integration` marker) |
 | `uv run python dev.py check` | lint + test |
 | `uv run python dev.py precommit` | lint + tests without `integration` |
 | `uv run python dev.py sweep` | destroy instances labeled `mcp-e2e-*` |

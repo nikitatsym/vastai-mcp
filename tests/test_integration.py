@@ -1,8 +1,9 @@
-"""Live read-only tests against the vast.ai API.
+"""Live tests against the vast.ai API.
 
-Nothing here creates, changes or destroys anything: search/list/show only.
-No API key means every test in this file fails - a skip would hide the API
-drift these tests exist to catch.
+Everything up to the paid rental harness is read-only: search/list/show only. The last
+class rents a real GPU, runs a command on it and destroys it; every teardown layer aims at
+that one instance. No API key means every test in this file fails - a skip would hide the
+API drift these tests exist to catch.
 """
 
 import atexit
@@ -10,6 +11,7 @@ import contextlib
 import os
 import signal
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -398,10 +400,13 @@ E2E_IMAGE = "nvidia/cuda:12.0.1-base-ubuntu22.04"
 # The image is refused by the container runtime on a host whose driver is older than this.
 E2E_IMAGE_CUDA = 12.0
 # Entrypoint launch mode keeps the image's own entrypoint, so the container needs a command
-# that does not exit; the marker proves ShowLogs returns this container's stdout.
+# that does not exit. ExecuteCommand runs neither: the API allows only ls, rm and du, and
+# only on a stopped instance. So nvidia-smi -L runs at startup and comes back through
+# ShowLogs, and the probe file it leaves is what the constrained ls reads back later.
 E2E_RUNTYPE = "args"
 LOG_MARKER = "mcp-e2e-online"
-E2E_ARGS = f'bash -c "echo {LOG_MARKER}; sleep infinity"'
+PROBE_NAME = "mcp-e2e-probe.txt"
+E2E_ARGS = f'bash -c "nvidia-smi -L | tee /{PROBE_NAME}; echo {LOG_MARKER}; sleep infinity"'
 
 DISK_GB = 8.0
 MAX_DPH = 0.15
@@ -409,6 +414,7 @@ OFFER_PAGE = 20
 
 POLL_INTERVAL_S = 10.0
 RUNNING_TIMEOUT_S = 8 * 60.0
+STOPPED_TIMEOUT_S = 4 * 60.0
 RESULT_TIMEOUT_S = 2 * 60.0
 GONE_TIMEOUT_S = 2 * 60.0
 
@@ -690,3 +696,82 @@ class TestE2eSweepsFirst:
         monkeypatch.setattr(dev, "_pytest", unreachable)
         with pytest.raises(APIError):
             dev.e2e()
+
+
+# -- Paid instance lifecycle --------------------
+
+def _rent(live, offer, label):
+    result = live(
+        tools.create_instance,
+        id=offer["id"], image=E2E_IMAGE, disk=DISK_GB, label=label,
+        runtype=E2E_RUNTYPE, args_str=E2E_ARGS,
+    )
+    assert result["success"] is True, result
+    return _Rental(live, int(result["new_contract"]), label)
+
+
+def _find_instance(live, instance_id):
+    instances = live(tools.list_instances)["instances"]
+    return next((i for i in instances if i["id"] == instance_id), None)
+
+
+@pytest.fixture
+def rental(live):
+    """Rents the cheapest usable offer and destroys it however the test ends.
+
+    The id is printed because pytest shows setup output on failure: a run that dies here
+    is exactly the one whose instance id you need.
+    """
+    offer = _pick_offer(live(tools.search_offers, limit=OFFER_PAGE, order="dph_total")["offers"])
+    label = f"{LABEL_PREFIX}{uuid.uuid4()}"
+    with _rented(lambda: _rent(live, offer, label), _REAPER) as rented:
+        print(f"rented {rented.id} as {label} at ${offer['dph_total']:.4f}/hr")
+        yield rented
+
+
+class TestPaidInstanceLifecycle:
+    def test_rent_run_and_destroy(self, live, rental):
+        record = _poll(
+            lambda: _find_instance(live, rental.id),
+            lambda rec: rec is not None and rec["actual_status"] == "running",
+            interval_s=POLL_INTERVAL_S, timeout_s=RUNNING_TIMEOUT_S,
+            what=f"instance {rental.id} never reached actual_status=running",
+        )
+        assert record["label"] == rental.label, "sweep finds instances by label"
+        assert record["image_uuid"] == E2E_IMAGE
+        assert record["dph_total"] <= MAX_DPH
+
+        logs = _poll(
+            lambda: live(tools.show_logs, id=rental.id, tail=50),
+            lambda out: isinstance(out, str) and LOG_MARKER in out,
+            interval_s=POLL_INTERVAL_S, timeout_s=RESULT_TIMEOUT_S,
+            what=f"logs of {rental.id} never carried the startup marker",
+        )
+        gpu_lines = [line for line in logs.splitlines() if line.startswith("GPU ")]
+        assert len(gpu_lines) == record["num_gpus"], logs
+
+        # The API refuses ExecuteCommand on a running instance and points at ssh instead, so
+        # the box is stopped first; its disk survives the stop and still holds the probe file.
+        live(tools.manage_instance, id=rental.id, state="stopped")
+        _poll(
+            lambda: _find_instance(live, rental.id),
+            lambda rec: rec is not None and rec["actual_status"] == "exited",
+            interval_s=POLL_INTERVAL_S, timeout_s=STOPPED_TIMEOUT_S,
+            what=f"instance {rental.id} never reached actual_status=exited",
+        )
+
+        listing = _poll(
+            lambda: live(tools.execute_command, id=rental.id, command="ls -la /"),
+            lambda out: isinstance(out, str) and PROBE_NAME in out,
+            interval_s=POLL_INTERVAL_S, timeout_s=RESULT_TIMEOUT_S,
+            what=f"ls on {rental.id} never saw the file the container wrote",
+        )
+        assert PROBE_NAME in listing
+
+        rental.destroy()
+        _poll(
+            lambda: _find_instance(live, rental.id),
+            lambda rec: rec is None,
+            interval_s=POLL_INTERVAL_S, timeout_s=GONE_TIMEOUT_S,
+            what=f"instance {rental.id} still listed after DestroyInstance",
+        )
