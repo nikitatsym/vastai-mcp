@@ -14,6 +14,11 @@ import pytest
 
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
+from vastai_mcp.tools import (
+    _SLIM_INSTANCE_FIELDS,
+    _SLIM_OFFER_FIELDS,
+    _SLIM_TEMPLATE_FIELDS,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -182,3 +187,198 @@ class TestRateLimitHandling:
         assert response.status_code == 400
         assert sender.sent == 1
         assert no_sleep == []
+
+
+# -- Shared live payloads --------------------
+
+OFFER_LIMIT = 7
+SPELLING_LIMIT = 10
+TEMPLATE_LIMIT = 5
+TEMPLATE_PAGE = 100
+TEMPLATE_NAME = "pytorch"
+GPU_NAME = "RTX 4090"
+
+
+@pytest.fixture(scope="session")
+def gpu_names(live):
+    return live(tools.list_gpu_names)["gpu_names"]
+
+
+@pytest.fixture(scope="session")
+def offers(live):
+    return live(tools.search_offers, limit=OFFER_LIMIT)["offers"]
+
+
+@pytest.fixture(scope="session")
+def offers_by_id(live):
+    return live(tools.search_offers, limit=SPELLING_LIMIT, order="id")["offers"]
+
+
+@pytest.fixture(scope="session")
+def offers_spaced_name(live, gpu_names):
+    return live(
+        tools.search_offers, gpu_name=GPU_NAME, limit=SPELLING_LIMIT, order="id",
+    )["offers"]
+
+
+@pytest.fixture(scope="session")
+def offers_underscored_name(live, gpu_names):
+    return live(
+        tools.search_offers, gpu_name=GPU_NAME.replace(" ", "_"),
+        limit=SPELLING_LIMIT, order="id",
+    )["offers"]
+
+
+@pytest.fixture(scope="session")
+def templates_page(live):
+    return live(tools.search_templates, limit=TEMPLATE_PAGE)["templates"]
+
+
+@pytest.fixture(scope="session")
+def templates_limited(live):
+    return live(tools.search_templates, limit=TEMPLATE_LIMIT)["templates"]
+
+
+@pytest.fixture(scope="session")
+def templates_named(live):
+    return live(
+        tools.search_templates, name=TEMPLATE_NAME, limit=TEMPLATE_PAGE,
+    )["templates"]
+
+
+# -- SearchOffers --------------------
+
+class TestSearchOffers:
+    def test_limit_is_honored(self, offers):
+        """The March regression sent limit as {"eq": n}, which the API answers with 400."""
+        assert len(offers) == OFFER_LIMIT
+
+    def test_offers_are_slimmed(self, offers):
+        for offer in offers:
+            assert set(offer) <= _SLIM_OFFER_FIELDS, f"unslimmed offer {offer['id']}"
+            assert offer["gpu_name"]
+            assert offer["dph_total"] > 0
+
+    def test_gpu_name_filter_narrows(self, offers_spaced_name, offers_by_id):
+        assert offers_spaced_name
+        assert {o["gpu_name"] for o in offers_spaced_name} == {GPU_NAME}
+        assert {o["gpu_name"] for o in offers_by_id} != {GPU_NAME}
+
+    def test_both_gpu_name_spellings_agree(self, offers_spaced_name, offers_underscored_name):
+        """'RTX_4090' must resolve to the catalog name instead of matching nothing."""
+        assert [o["id"] for o in offers_spaced_name] == [o["id"] for o in offers_underscored_name]
+
+    def test_unknown_gpu_name_lists_the_catalog(self, gpu_names):
+        with pytest.raises(ValueError, match="not a known GPU") as excinfo:
+            tools.search_offers(gpu_name="RTX 9090")
+        assert gpu_names[0] in str(excinfo.value)
+
+
+# -- ListGpuNames --------------------
+
+class TestListGpuNames:
+    def test_catalog_is_a_non_empty_string_list(self, gpu_names):
+        assert gpu_names
+        assert all(isinstance(name, str) and name for name in gpu_names)
+
+    def test_catalog_holds_the_name_offers_are_searched_by(self, gpu_names):
+        assert GPU_NAME in gpu_names
+
+
+# -- SearchTemplates --------------------
+
+class TestSearchTemplates:
+    def test_limit_cuts(self, templates_limited):
+        assert len(templates_limited) == TEMPLATE_LIMIT
+
+    def test_name_filter_narrows(self, templates_named, templates_page):
+        assert templates_named
+        assert len(templates_named) < len(templates_page)
+        for template in templates_named:
+            assert TEMPLATE_NAME in template["name"].lower()
+
+    def test_no_fields_beyond_the_slim_set(self, templates_page):
+        for template in templates_page:
+            assert set(template) <= _SLIM_TEMPLATE_FIELDS, (
+                f"unslimmed template {template['id']}"
+            )
+
+
+# -- ShowInvoicesV1 --------------------
+
+WIDE_START = "2020-01-01"
+WIDE_END = "2027-01-01"
+WIDE_START_TS = 1577836800
+WIDE_END_TS = 1798761600
+
+
+class TestShowInvoicesV1:
+    def test_default_range_succeeds(self, live):
+        """An unbounded range answers 'Invalid date range', so the default must be bounded."""
+        assert live(tools.show_invoices_v1)["success"] is True
+
+    def test_explicit_window_bounds_the_results(self, live):
+        result = live(
+            tools.show_invoices_v1, start_date=WIDE_START, end_date=WIDE_END, limit=50,
+        )
+        assert result["success"] is True
+        assert result["results"], "account has no invoice between 2020 and 2027"
+        assert result["count"] == len(result["results"])
+        for invoice in result["results"]:
+            assert WIDE_START_TS <= invoice["start"] <= WIDE_END_TS
+
+    def test_window_before_the_account_existed_is_empty(self, live):
+        result = live(
+            tools.show_invoices_v1, start_date="2000-01-01", end_date="2001-01-01",
+        )
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["results"] == []
+
+
+# -- Remaining read operations --------------------
+
+class TestListInstances:
+    def test_shape_and_slimming(self, live):
+        result = live(tools.list_instances)
+        assert isinstance(result["instances_found"], int)
+        for instance in result["instances"]:
+            assert set(instance) <= _SLIM_INSTANCE_FIELDS
+
+
+class TestSearchVolumes:
+    def test_offers_have_ids_and_space(self, live):
+        offers = live(tools.search_volumes)["offers"]
+        assert offers
+        for offer in offers:
+            assert isinstance(offer["id"], int)
+            assert offer["disk_space"] > 0
+
+
+class TestSearchBenchmarks:
+    def test_rows_carry_machine_and_value(self, live):
+        rows = live(tools.search_benchmarks)
+        assert rows
+        assert {"id", "machine_id", "value"} <= set(rows[0])
+
+
+class TestListEndpoints:
+    def test_shape(self, live):
+        result = live(tools.list_endpoints)
+        assert result["success"] is True
+        assert isinstance(result["results"], list)
+
+
+class TestListWorkergroups:
+    def test_shape(self, live):
+        result = live(tools.list_workergroups)
+        assert result["success"] is True
+        assert isinstance(result["results"], list)
+
+
+class TestShowUser:
+    def test_identity_and_balance(self, live):
+        user = live(tools.show_user)
+        assert isinstance(user["id"], int)
+        assert isinstance(user["credit"], float)
+        assert "email" in user
