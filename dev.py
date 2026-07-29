@@ -1,8 +1,10 @@
 """Single entry point for repo gates: linters, tests, live-instance cleanup."""
 
+import os
 import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from vastai_mcp.tools import destroy_instance, list_instances
 
@@ -44,7 +46,39 @@ def e2e() -> int:
     return sweep() or _pytest("-m", "integration")
 
 
+def install_hook() -> int:
+    """Point git at the repo's tracked pre-commit hook. Idempotent."""
+    root = Path(__file__).resolve().parent
+    if (root / ".githooks" / "pre-commit").exists():
+        return subprocess.run(
+            ["git", "config", "core.hooksPath", ".githooks"], check=False
+        ).returncode
+    print("no tracked hook: expected .githooks/pre-commit", file=sys.stderr)
+    return 1
+
+
+def _hook_ready() -> bool:
+    root = Path(__file__).resolve().parent
+    if (root / ".git" / "hooks" / "pre-commit").exists():
+        return True
+    configured = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return bool(configured) and (root / configured / "pre-commit").exists()
+
+
+def _hook_hint() -> None:
+    # Running the gate by hand is what an uninstalled hook looks like; CI does
+    # not care, and precommit itself only ever runs once the hook exists.
+    if not os.environ.get("CI") and not _hook_ready():
+        print("hint: `python dev.py hook` installs the pre-commit gate", file=sys.stderr)
+
+
 def check() -> int:
+    _hook_hint()
     return lint() or test()
 
 
@@ -74,6 +108,7 @@ COMMANDS: dict[str, Callable[[], int]] = {
     "check": check,
     "precommit": precommit,
     "sweep": sweep,
+    "hook": install_hook,
 }
 
 
