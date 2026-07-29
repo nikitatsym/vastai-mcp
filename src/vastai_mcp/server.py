@@ -4,14 +4,14 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from pydantic.fields import FieldInfo
 
 from . import tools as _tools_module
 from .registry import ROOT
 
-mcp = FastMCP("vastai")
+mcp = MCPServer("vastai")
 
 # -- State (populated by _register_tools) --------------------
 
