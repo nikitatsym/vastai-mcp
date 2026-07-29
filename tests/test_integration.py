@@ -13,6 +13,7 @@ import os
 import signal
 import time
 import uuid
+import warnings
 from typing import Any
 
 import httpx
@@ -616,7 +617,20 @@ class _Rental:
         if self.destroyed:
             return None
         self.destroyed = True
-        return self._live(tools.destroy_instance, id=self.id)
+        try:
+            return self._live(tools.destroy_instance, id=self.id)
+        except APIError as e:
+            # no-report: vast.ai reaps a dud under us, and the listing proves it really went
+            reaped = isinstance(e.body, dict) and e.body.get("error") == "no_such_instance"
+            if not (e.status == 404 and reaped):
+                raise
+            # Same 404 answers "already reaped" and "never yours" (wrong id or account); only
+            # the listing separates them, and guessing wrong keeps renting instances we think
+            # we destroyed.
+            if _find_instance(self._live, self.id) is not None:
+                raise
+            warnings.warn(f"instance {self.id} was already gone", stacklevel=2)
+            return None
 
 
 class _Reaper:
@@ -670,6 +684,23 @@ class _FakeLive:
     def __call__(self, fn, **kwargs):
         self.calls.append((fn, kwargs))
         return {"success": True}
+
+
+def _gone_404() -> APIError:
+    return APIError(404, "DELETE", "/i/42/", {"success": False, "error": "no_such_instance"})
+
+
+class _ReapedLive:
+    """live() stand-in for the destroy paths: destroys raise, the listing shows `listed`."""
+
+    def __init__(self, err: APIError, listed: tuple[int, ...] = ()) -> None:
+        self.err = err
+        self.listed = listed
+
+    def __call__(self, fn, **kwargs):
+        if fn is tools.list_instances:
+            return {"instances": [{"id": i} for i in self.listed]}
+        raise self.err
 
 
 class _FakeProbe:
@@ -804,6 +835,42 @@ class TestTeardownLayers:
         rental.destroy()
         rental.destroy()
         assert live.calls == [(tools.destroy_instance, {"id": 42})]
+
+    def test_destroy_accepts_a_dud_the_listing_confirms_is_gone(self):
+        """The reap is the one tolerated failure, and only once the listing backs it."""
+        live = _ReapedLive(_gone_404())
+        with pytest.warns(UserWarning, match="42 was already gone"):
+            assert _Rental(live, 42, "mcp-e2e-x").destroy() is None
+
+    def test_destroy_raises_when_the_listing_still_shows_the_instance(self):
+        """no_such_instance on an id that is still listed means wrong id or wrong account."""
+        live = _ReapedLive(_gone_404(), listed=(42,))
+        with pytest.raises(APIError):
+            _Rental(live, 42, "mcp-e2e-x").destroy()
+
+    def test_destroy_raises_on_no_such_instance_at_another_status(self):
+        live = _ReapedLive(APIError(500, "DELETE", "/i/42/", {"error": "no_such_instance"}))
+        with pytest.raises(APIError):
+            _Rental(live, 42, "mcp-e2e-x").destroy()
+
+    def test_destroy_raises_on_a_404_whose_body_is_not_json(self):
+        """A proxy 404 arrives as text; probing it for an error key must not mask the APIError."""
+        live = _ReapedLive(APIError(404, "DELETE", "/i/42/", "<html>not found</html>"))
+        with pytest.raises(APIError):
+            _Rental(live, 42, "mcp-e2e-x").destroy()
+
+    def test_destroy_raises_on_a_404_that_is_not_no_such_instance(self):
+        live = _ReapedLive(APIError(404, "DELETE", "/i/42/", {"error": "no_such_route"}))
+        with pytest.raises(APIError):
+            _Rental(live, 42, "mcp-e2e-x").destroy()
+
+    def test_a_raising_destroy_is_not_retried(self):
+        """The flag is set before the call, so no teardown layer re-attempts a failed destroy."""
+        rental = _Rental(_ReapedLive(APIError(500, "DELETE", "/i/42/", {"error": "boom"})),
+                         42, "mcp-e2e-x")
+        with pytest.raises(APIError):
+            rental.destroy()
+        assert rental.destroy() is None
 
     def test_the_body_raising_still_destroys(self):
         """The whole point of the finally layer: a red test must not leave a GPU running."""
