@@ -1,7 +1,9 @@
 """Tests for validation: crash on bad input, types, Literal enforcement."""
 
+import ast
 import json
 import pathlib
+import sys
 from typing import Literal
 
 import httpx
@@ -1008,11 +1010,26 @@ class TestExecuteCommandDoc:
 
 # -- client error handling --------------------
 
+class TestDevEntryPoint:
+    def test_dev_py_imports_only_the_stdlib(self):
+        """dev.py installs the hook and drives every gate, so it has to run on a bare
+        interpreter: anything it imports is something a fresh clone must already have."""
+        root = pathlib.Path(__file__).resolve().parents[1]
+        imported = set()
+        for node in ast.walk(ast.parse((root / "dev.py").read_text())):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                imported.add(node.module.split(".")[0])
+        assert imported <= sys.stdlib_module_names, sorted(imported - sys.stdlib_module_names)
+
+
 class TestRepoAscii:
     def test_sources_are_ascii(self):
         root = pathlib.Path(__file__).resolve().parents[1]
         targets = (
             sorted(root.glob("src/**/*.py"))
+            + sorted(root.glob("scripts/**/*.py"))
             + sorted(root.glob("tests/**/*.py"))
             + sorted(root.glob(".github/workflows/*.yml"))
             + [

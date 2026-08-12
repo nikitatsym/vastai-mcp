@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 import dev
+from scripts.sweep import LABEL_PREFIX
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.tools import (
@@ -528,8 +529,6 @@ class TestShowUser:
 
 # -- Paid rental harness --------------------
 
-LABEL_PREFIX = dev.SWEEP_LABEL_PREFIX
-
 # A ~250MB image keeps both the pull and the 8GB disk small, and nvidia/cuda declares
 # NVIDIA_DRIVER_CAPABILITIES, which is what makes nvidia-smi appear inside the container.
 E2E_IMAGE = "nvidia/cuda:12.0.1-base-ubuntu22.04"
@@ -968,17 +967,14 @@ class TestE2eSweepsFirst:
         assert order == ["sweep", ("-m", "integration")]
 
     def test_a_broken_sweep_aborts_the_run(self, monkeypatch):
-        """Renting on top of instances we failed to account for is how bills run away."""
-        def broken_sweep():
-            raise APIError(500, "GET", "/api/v0/instances/", {"msg": "down"})
-
+        """Renting on top of instances we failed to account for is how bills run away.
+        The sweep is a subprocess, so a broken one shows up as its exit code."""
         def unreachable(*args):
             raise AssertionError(f"pytest must not start after a broken sweep: {args}")
 
-        monkeypatch.setattr(dev, "sweep", broken_sweep)
+        monkeypatch.setattr(dev, "sweep", lambda: 1)
         monkeypatch.setattr(dev, "_pytest", unreachable)
-        with pytest.raises(APIError):
-            dev.e2e()
+        assert dev.e2e() == 1
 
 
 # -- Paid instance lifecycle --------------------

@@ -6,21 +6,22 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from vastai_mcp.tools import destroy_instance, list_instances
+ROOT = Path(__file__).resolve().parent
 
-# Live e2e tests label every instance they rent with this prefix.
-SWEEP_LABEL_PREFIX = "mcp-e2e-"
+# Every gate is a subprocess of the project runner rather than of this interpreter: the
+# entry point that installs the environment must not need it to already be there.
+UV_PYTHON = ["uv", "run", "python"]
 
 _PYTEST_NO_TESTS = 5
 
 
 def _run(cmd: list[str]) -> int:
     print(f"\n$ {' '.join(cmd)}", flush=True)
-    return subprocess.run(cmd, check=False).returncode
+    return subprocess.run(cmd, cwd=ROOT, check=False).returncode
 
 
 def _pytest(*args: str) -> int:
-    rc = _run([sys.executable, "-m", "pytest", *args])
+    rc = _run([*UV_PYTHON, "-m", "pytest", *args])
     if rc == _PYTEST_NO_TESTS:
         print(f"dev.py: no tests collected for {list(args)}", file=sys.stderr)
         return 1
@@ -30,8 +31,8 @@ def _pytest(*args: str) -> int:
 def lint() -> int:
     """Every linter over the whole repo. tests/ is not a package, so mypy takes paths."""
     rcs = [
-        _run([sys.executable, "-m", "ruff", "check", "."]),
-        _run([sys.executable, "-m", "mypy", "src", "dev.py"]),
+        _run([*UV_PYTHON, "-m", "ruff", "check", "."]),
+        _run([*UV_PYTHON, "-m", "mypy", "src", "scripts", "dev.py"]),
         _run(["uvx", "tackbox@latest", "lint", "."]),
     ]
     return next((rc for rc in rcs if rc != 0), 0)
@@ -48,26 +49,25 @@ def e2e() -> int:
 
 def install_hook() -> int:
     """Point git at the repo's tracked pre-commit hook. Idempotent."""
-    root = Path(__file__).resolve().parent
-    if (root / ".githooks" / "pre-commit").exists():
+    if (ROOT / ".githooks" / "pre-commit").exists():
         return subprocess.run(
-            ["git", "config", "core.hooksPath", ".githooks"], check=False
+            ["git", "config", "core.hooksPath", ".githooks"], cwd=ROOT, check=False
         ).returncode
     print("no tracked hook: expected .githooks/pre-commit", file=sys.stderr)
     return 1
 
 
 def _hook_ready() -> bool:
-    root = Path(__file__).resolve().parent
-    if (root / ".git" / "hooks" / "pre-commit").exists():
+    if (ROOT / ".git" / "hooks" / "pre-commit").exists():
         return True
     configured = subprocess.run(
         ["git", "config", "--get", "core.hooksPath"],
+        cwd=ROOT,
         capture_output=True,
         text=True,
         check=False,
     ).stdout.strip()
-    return bool(configured) and (root / configured / "pre-commit").exists()
+    return bool(configured) and (ROOT / configured / "pre-commit").exists()
 
 
 def _hook_hint() -> None:
@@ -87,18 +87,9 @@ def precommit() -> int:
 
 
 def sweep() -> int:
-    """Destroy every instance left behind by e2e runs."""
-    instances = list_instances()["instances"]
-    doomed = [
-        inst["id"]
-        for inst in instances
-        if str(inst.get("label") or "").startswith(SWEEP_LABEL_PREFIX)
-    ]
-    for instance_id in doomed:
-        destroy_instance(instance_id)
-        print(f"destroyed {instance_id}")
-    print(f"sweep: {len(doomed)} instance(s) destroyed")
-    return 0
+    """Destroy every instance left behind by e2e runs. Runs out of process because it is
+    the only gate that needs the package importable."""
+    return _run([*UV_PYTHON, "scripts/sweep.py"])
 
 
 COMMANDS: dict[str, Callable[[], int]] = {
