@@ -38,10 +38,13 @@ error carrying `retry_after`; the server never retries it silently, the caller w
 
 ## Development
 
-Every gate runs through `dev.py`; CI calls the same commands.
+Every gate runs through `dev.py`; CI calls the same commands. Each gate is a subprocess
+of `uv run`, so `dev.py` itself needs nothing installed: a fresh clone starts with
+`python dev.py hook`.
 
 | Command | Runs |
 |---------|------|
+| `python dev.py hook` | point git at the tracked hook, once per clone |
 | `uv run python dev.py lint` | ruff, mypy, tackbox |
 | `uv run python dev.py test` | all tests, live ones included |
 | `uv run python dev.py e2e` | sweep, then live tests only (`integration` marker) |
@@ -49,9 +52,7 @@ Every gate runs through `dev.py`; CI calls the same commands.
 | `uv run python dev.py precommit` | lint + tests without `integration` |
 | `uv run python dev.py sweep` | destroy instances labeled `mcp-e2e-*` |
 
-Live tests rent real GPUs, so the hook runs `precommit` rather than `check`.
-Enable the hook once per clone:
-
-```bash
-git config core.hooksPath .githooks
-```
+The pre-commit hook runs `dev.py check`, the same gate as CI and with no logic of its
+own. That includes the live tests, so a commit rents a real GPU for a few minutes and
+needs `VASTAI_API_KEY` in the environment; without the key the live tests fail rather
+than skip. `precommit` is the same gate without them, for iterating by hand.

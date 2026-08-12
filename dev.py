@@ -71,8 +71,7 @@ def _hook_ready() -> bool:
 
 
 def _hook_hint() -> None:
-    # Running the gate by hand is what an uninstalled hook looks like; CI does
-    # not care, and precommit itself only ever runs once the hook exists.
+    # Running check by hand is what an uninstalled hook looks like; CI does not care.
     if not os.environ.get("CI") and not _hook_ready():
         print("hint: `python dev.py hook` installs the pre-commit gate", file=sys.stderr)
 
@@ -83,6 +82,7 @@ def check() -> int:
 
 
 def precommit() -> int:
+    """The check gate minus the rentals: a fast pass by hand, not what the hook runs."""
     return lint() or _pytest("-m", "not integration")
 
 
