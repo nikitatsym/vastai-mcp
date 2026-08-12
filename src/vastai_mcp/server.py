@@ -1,4 +1,5 @@
 import inspect
+import re
 import types
 import typing
 from collections.abc import Callable
@@ -171,6 +172,31 @@ def _dispatch(operation: str, group_name: str, params: dict[str, Any]) -> Any:
     return _validated_call(ops[operation], params, operation)
 
 
+# -- Doc examples --------------------
+
+_EXAMPLE_OPERATION = re.compile(r'operation="(\w+)"')
+
+# help and schema are answered by the group tool itself, not by a registered operation.
+_VIRTUAL_OPERATIONS = frozenset({"help", "schema"})
+
+
+def _validate_doc_examples(group_name: str, doc: str, ops: dict[str, Any]) -> None:
+    """Reject a group doc whose example names an operation the group does not expose.
+
+    Examples are hand-written while operation names come from the registered
+    functions, so only this check keeps the two from drifting apart.
+    """
+    unknown = sorted(
+        name
+        for name in _EXAMPLE_OPERATION.findall(doc)
+        if name not in _VIRTUAL_OPERATIONS and name not in ops
+    )
+    if unknown:
+        raise RuntimeError(
+            f"{group_name} doc example references unknown operations: {unknown}"
+        )
+
+
 def _register_tools() -> None:
     groups: dict[str, tuple[Any, dict[str, Any]]] = {}
     # Any, not FunctionType: registration hangs attributes off the function object.
@@ -190,6 +216,7 @@ def _register_tools() -> None:
     for group_name, (group, fns) in groups.items():
         ops = {_to_pascal(n): fn for n, fn in fns.items()}
         _group_ops[group_name] = ops
+        _validate_doc_examples(group_name, group.doc, ops)
         for pascal_name in ops:
             _all_grouped[pascal_name] = group_name
 

@@ -10,6 +10,8 @@ import pytest
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.server import (
+    _EXAMPLE_OPERATION,
+    _VIRTUAL_OPERATIONS,
     _all_grouped,
     _build_help,
     _build_params_model,
@@ -17,6 +19,7 @@ from vastai_mcp.server import (
     _format_type,
     _group_ops,
     _to_pascal,
+    _validate_doc_examples,
 )
 from vastai_mcp.tools import (
     _BENCHMARK_COLUMNS,
@@ -963,6 +966,31 @@ class TestGroupDocs:
         """'nvidia-smi' was the old example and the API refuses it."""
         doc = _group_docs()["vastai_execute"]
         assert "nvidia-smi" not in doc
+
+    def test_examples_name_registered_operations(self):
+        """A doc example is the first call an agent makes, so a stale name breaks it."""
+        for group_name, doc in _group_docs().items():
+            for name in _EXAMPLE_OPERATION.findall(doc):
+                if name in _VIRTUAL_OPERATIONS:
+                    continue
+                assert name in _group_ops[group_name], (
+                    f"{group_name} example names {name!r}, which it does not expose"
+                )
+
+
+class TestDocExampleValidation:
+    def test_unknown_operation_is_rejected(self):
+        with pytest.raises(RuntimeError, match="NoSuchOp"):
+            _validate_doc_examples(
+                "vastai_read",
+                'Example: vastai_read(operation="NoSuchOp")',
+                {"SearchOffers": None},
+            )
+
+    def test_virtual_operations_are_accepted(self):
+        _validate_doc_examples(
+            "vastai_read", 'operation="help" operation="schema"', {},
+        )
 
 
 class TestExecuteCommandDoc:
