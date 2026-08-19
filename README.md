@@ -52,7 +52,7 @@ of `uv run`, so `dev.py` itself needs nothing installed: a fresh clone starts wi
 | `uv run python dev.py precommit` | lint + tests without `integration` |
 | `uv run python dev.py sweep` | destroy instances labeled `mcp-e2e-*` |
 
-The pre-commit hook runs `dev.py check`, the same gate as CI and with no logic of its
-own. That includes the live tests, so a commit rents a real GPU for a few minutes and
-needs `VASTAI_API_KEY` in the environment; without the key the live tests fail rather
-than skip. `precommit` is the same gate without them, for iterating by hand.
+The pre-commit hook runs `dev.py precommit`: lint plus tests without the
+`integration` marker, so a local commit never rents hardware or needs
+`VASTAI_API_KEY`. CI runs `dev.py check` with the repository secret and includes
+the live API and paid lifecycle tests.

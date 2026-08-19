@@ -1,2 +1,2 @@
 #!/bin/sh
-exec uv run python dev.py check
+exec uv run python dev.py precommit
