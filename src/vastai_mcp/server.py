@@ -1,5 +1,6 @@
 import inspect
 import re
+import string
 import types
 import typing
 from collections.abc import Callable
@@ -172,29 +173,34 @@ def _dispatch(operation: str, group_name: str, params: dict[str, Any]) -> Any:
     return _validated_call(ops[operation], params, operation)
 
 
-# -- Doc examples --------------------
+# -- Group docs --------------------
 
-_EXAMPLE_OPERATION = re.compile(r'operation="(\w+)"')
+_HARDCODED_OPERATION = re.compile(r"""\boperation\s*=\s*["'](?![$<])""")
 
 # help and schema are answered by the group tool itself, not by a registered operation.
 _VIRTUAL_OPERATIONS = frozenset({"help", "schema"})
 
 
-def _validate_doc_examples(group_name: str, doc: str, ops: dict[str, Any]) -> None:
-    """Reject a group doc whose example names an operation the group does not expose.
+def _render_group_doc(group_name: str, doc: str, ops: dict[str, Any]) -> str:
+    """Resolve $OpName placeholders in a group doc against the registered operations.
 
     Examples are hand-written while operation names come from the registered
-    functions, so only this check keeps the two from drifting apart.
+    functions; rendering the names from the registry keeps the two from drifting
+    apart, and an unresolved placeholder aborts startup. A hardcoded operation name
+    is rejected outright; `<...>` stays available for deliberately generic
+    placeholders.
     """
-    unknown = sorted(
-        name
-        for name in _EXAMPLE_OPERATION.findall(doc)
-        if name not in _VIRTUAL_OPERATIONS and name not in ops
-    )
-    if unknown:
+    if _HARDCODED_OPERATION.search(doc):
         raise RuntimeError(
-            f"{group_name} doc example references unknown operations: {unknown}"
+            f"{group_name} doc hardcodes an operation name; use the $OpName form"
         )
+    names = {name: name for name in ops} | {name: name for name in _VIRTUAL_OPERATIONS}
+    try:
+        return string.Template(doc).substitute(names)
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError(
+            f"{group_name} doc references an unknown operation placeholder: {exc}"
+        ) from exc
 
 
 def _register_tools() -> None:
@@ -216,7 +222,7 @@ def _register_tools() -> None:
     for group_name, (group, fns) in groups.items():
         ops = {_to_pascal(n): fn for n, fn in fns.items()}
         _group_ops[group_name] = ops
-        _validate_doc_examples(group_name, group.doc, ops)
+        doc = _render_group_doc(group_name, group.doc, ops)
         for pascal_name in ops:
             _all_grouped[pascal_name] = group_name
 
@@ -231,7 +237,7 @@ def _register_tools() -> None:
             tool_fn.__doc__ = gdoc
             return tool_fn
 
-        mcp.tool()(_make_tool(group_name, group.doc))
+        mcp.tool()(_make_tool(group_name, doc))
 
 
 _register_tools()

@@ -378,8 +378,8 @@ _RATE_LIMIT_POLICY = (
 def _group_doc(summary: str, kind: str, example: str) -> str:
     return (
         f"{summary}\n\n"
-        f"Call with operation=\"help\" to list all available {kind} operations, or "
-        f"operation=\"schema\" for their JSON Schema.\n"
+        f"Call with operation=\"$help\" to list all available {kind} operations, or "
+        f"operation=\"$schema\" for their JSON Schema.\n"
         f"Otherwise pass the operation name and a JSON object with parameters.\n\n"
         f"Example: {example}\n\n"
         f"{_RATE_LIMIT_POLICY}"
@@ -391,7 +391,7 @@ vastai_read = Group(
     _group_doc(
         "Query Vast.ai data (safe, read-only).",
         "read",
-        "vastai_read(operation=\"SearchOffers\", "
+        "vastai_read(operation=\"$SearchOffers\", "
         "params={\"gpu_name\": \"RTX 4090\", \"limit\": 10})",
     ),
 )
@@ -401,7 +401,7 @@ vastai_write = Group(
     _group_doc(
         "Create or update Vast.ai resources (non-destructive).",
         "write",
-        "vastai_write(operation=\"CreateInstance\", "
+        "vastai_write(operation=\"$CreateInstance\", "
         "params={\"id\": 12345, \"image\": \"pytorch/pytorch\", \"disk\": 20})",
     ),
 )
@@ -411,7 +411,7 @@ vastai_execute = Group(
     _group_doc(
         "Execute actions on Vast.ai resources (reboot, disk commands, copy data).",
         "execute",
-        "vastai_execute(operation=\"ExecuteCommand\", "
+        "vastai_execute(operation=\"$ExecuteCommand\", "
         "params={\"id\": 12345, \"command\": \"ls -la /\"})",
     ),
 )
@@ -421,7 +421,7 @@ vastai_delete = Group(
     _group_doc(
         "Delete Vast.ai resources (destructive, irreversible).",
         "delete",
-        "vastai_delete(operation=\"DestroyInstance\", params={\"id\": 12345})",
+        "vastai_delete(operation=\"$DestroyInstance\", params={\"id\": 12345})",
     ),
 )
 

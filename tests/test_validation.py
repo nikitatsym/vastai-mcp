@@ -3,6 +3,7 @@
 import ast
 import json
 import pathlib
+import re
 import sys
 from typing import Literal
 
@@ -12,7 +13,6 @@ import pytest
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
 from vastai_mcp.server import (
-    _EXAMPLE_OPERATION,
     _VIRTUAL_OPERATIONS,
     _all_grouped,
     _build_help,
@@ -20,8 +20,8 @@ from vastai_mcp.server import (
     _dispatch,
     _format_type,
     _group_ops,
+    _render_group_doc,
     _to_pascal,
-    _validate_doc_examples,
 )
 from vastai_mcp.tools import (
     _BENCHMARK_COLUMNS,
@@ -945,6 +945,14 @@ def _group_docs():
     }
 
 
+def _rendered_group_docs():
+    """What the MCP client actually reads: the doc after placeholder substitution."""
+    return {
+        group_name: _render_group_doc(group_name, doc, _group_ops[group_name])
+        for group_name, doc in _group_docs().items()
+    }
+
+
 class TestGroupDocs:
     """The 429 policy is a contract for the calling agent, so it lives in the tool doc."""
 
@@ -961,7 +969,7 @@ class TestGroupDocs:
             assert "never retries silently" in doc, group_name
 
     def test_every_group_points_at_schema(self):
-        for group_name, doc in _group_docs().items():
+        for group_name, doc in _rendered_group_docs().items():
             assert 'operation="schema"' in doc, group_name
 
     def test_execute_example_uses_an_accepted_command(self):
@@ -969,30 +977,45 @@ class TestGroupDocs:
         doc = _group_docs()["vastai_execute"]
         assert "nvidia-smi" not in doc
 
-    def test_examples_name_registered_operations(self):
-        """A doc example is the first call an agent makes, so a stale name breaks it."""
-        for group_name, doc in _group_docs().items():
-            for name in _EXAMPLE_OPERATION.findall(doc):
-                if name in _VIRTUAL_OPERATIONS:
-                    continue
-                assert name in _group_ops[group_name], (
-                    f"{group_name} example names {name!r}, which it does not expose"
-                )
 
+class TestGroupDocRendering:
+    """A doc example is the first call an agent makes, so a stale name breaks it."""
 
-class TestDocExampleValidation:
-    def test_unknown_operation_is_rejected(self):
+    def test_every_group_doc_renders(self):
+        # A literal price is written `$$0.50` and renders to `$0.50`; only a `$name`
+        # form left standing means a placeholder went unrendered.
+        for group_name, doc in _rendered_group_docs().items():
+            assert not re.search(r"\$[A-Za-z_{]", doc), (
+                f"{group_name} doc left a placeholder unrendered"
+            )
+
+    def test_unknown_placeholder_is_rejected(self):
         with pytest.raises(RuntimeError, match="NoSuchOp"):
-            _validate_doc_examples(
+            _render_group_doc(
                 "vastai_read",
-                'Example: vastai_read(operation="NoSuchOp")',
+                'Example: vastai_read(operation="$NoSuchOp")',
                 {"SearchOffers": None},
             )
 
-    def test_virtual_operations_are_accepted(self):
-        _validate_doc_examples(
-            "vastai_read", 'operation="help" operation="schema"', {},
-        )
+    def test_hardcoded_operation_is_rejected(self):
+        with pytest.raises(RuntimeError, match="hardcodes"):
+            _render_group_doc(
+                "vastai_read",
+                'Example: vastai_read(operation="SearchOffers")',
+                {"SearchOffers": None},
+            )
+
+        with pytest.raises(RuntimeError, match="hardcodes"):
+            _render_group_doc(
+                "vastai_read",
+                'Example: vastai_read(operation = "SearchOffers")',
+                {"SearchOffers": None},
+            )
+
+    def test_virtual_operations_resolve_and_generic_form_passes_through(self):
+        doc = " ".join(f'operation="${name}"' for name in sorted(_VIRTUAL_OPERATIONS))
+        rendered = _render_group_doc("vastai_read", f'{doc} operation="<OpName>"', {})
+        assert rendered == 'operation="help" operation="schema" operation="<OpName>"'
 
 
 class TestExecuteCommandDoc:
