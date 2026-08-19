@@ -57,6 +57,7 @@ _SLIM_INSTANCE_FIELDS = {
 _BENCHMARK_COLUMNS = frozenset({
     "id", "last_update", "template_hash", "template_id", "launch_args", "type",
     "machine_id", "contract_id", "num_gpus", "gpu_name", "image", "value", "details",
+    "dph_base",
 })
 
 
