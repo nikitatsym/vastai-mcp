@@ -578,13 +578,27 @@ def search_benchmarks(
                 f"select_cols={unknown} are not benchmark columns. "
                 f"Valid: {', '.join(sorted(_BENCHMARK_COLUMNS))}"
             )
-    rows = _get_client().get("/api/v0/benchmarks/", params={
+    response = _get_client().get("/api/v0/benchmarks/", params={
         "select_cols": json.dumps(list(select_cols) if select_cols else ["*"]),
         "select_filters": json.dumps(filters),
     })
-    if isinstance(rows, list):
-        return rows[:int(limit)]
-    return _ok(rows)
+    if not isinstance(response, dict):
+        raise TypeError(
+            "SearchBenchmarks expected a successful /api/v0/benchmarks/ response "
+            f"envelope with a 'benchmarks' list, got {type(response).__name__}."
+        )
+    if response.get("success") is not True:
+        raise ValueError(
+            "SearchBenchmarks expected a successful /api/v0/benchmarks/ response "
+            f"envelope with a 'benchmarks' list, got success={response.get('success')!r}."
+        )
+    benchmarks = response.get("benchmarks")
+    if not isinstance(benchmarks, list):
+        raise TypeError(
+            "SearchBenchmarks expected a successful /api/v0/benchmarks/ response "
+            f"envelope with a 'benchmarks' list, got {type(benchmarks).__name__}."
+        )
+    return benchmarks[:int(limit)]
 
 
 @_op(vastai_read)

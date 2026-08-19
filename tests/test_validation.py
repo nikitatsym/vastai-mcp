@@ -805,20 +805,20 @@ class TestSearchBenchmarksRequest:
 
     def test_no_filter_crashes_before_the_request(self, fake_client):
         """Unfiltered the endpoint returns ~105k rows and ignores limit."""
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         with pytest.raises(ValueError, match="at least one of machine_id"):
             search_benchmarks()
         assert client.calls == []
 
     def test_machine_id_becomes_an_eq_filter(self, fake_client):
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         search_benchmarks(machine_id=11)
         params = client.calls[0][2]["params"]
         assert json.loads(params["select_filters"]) == {"machine_id": {"eq": 11}}
         assert client.calls[0][1] == "/api/v0/benchmarks/"
 
     def test_every_filter_reaches_the_query(self, fake_client, gpu_catalog):
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         search_benchmarks(
             machine_id=11, contract_id=42, gpu_name="RTX 4090", num_gpus=2, image="cuda",
         )
@@ -829,46 +829,91 @@ class TestSearchBenchmarksRequest:
 
     def test_gpu_name_spelling_is_resolved(self, fake_client, gpu_catalog):
         """A name the catalog does not carry would filter to zero rows in silence."""
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         search_benchmarks(gpu_name="RTX_4090")
         filters = json.loads(client.calls[0][2]["params"]["select_filters"])
         assert filters["gpu_name"] == {"eq": "RTX 4090"}
 
     def test_unknown_gpu_name_crashes(self, fake_client, gpu_catalog):
-        fake_client([])
+        fake_client({"success": True, "benchmarks": []})
         with pytest.raises(ValueError, match="not a known GPU"):
             search_benchmarks(gpu_name="RTX 9090")
 
     def test_select_cols_defaults_to_all(self, fake_client):
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         search_benchmarks(machine_id=11)
         assert json.loads(client.calls[0][2]["params"]["select_cols"]) == ["*"]
 
-    def test_select_cols_are_passed_through(self, fake_client):
-        client = fake_client([])
-        search_benchmarks(machine_id=11, select_cols=["id", "value"])
+    def test_select_cols_are_passed_through_and_preserve_row_shape(self, fake_client):
+        rows = [{"id": 1, "value": 12.5}]
+        client = fake_client({
+            "success": True,
+            "benchmarks": rows,
+            "benchmarks_found": 1,
+            "next_token": None,
+        })
+        assert search_benchmarks(machine_id=11, select_cols=["id", "value"]) == rows
         assert json.loads(client.calls[0][2]["params"]["select_cols"]) == ["id", "value"]
 
     def test_unknown_select_col_crashes(self, fake_client):
         """The API answers an unknown column with a null 'anon_1' instead of an error."""
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         with pytest.raises(ValueError, match="are not benchmark columns"):
             search_benchmarks(machine_id=11, select_cols=["id", "score"])
         assert client.calls == []
 
     def test_unknown_select_col_lists_the_valid_ones(self, fake_client):
-        fake_client([])
+        fake_client({"success": True, "benchmarks": []})
         with pytest.raises(ValueError, match="machine_id"):
             search_benchmarks(machine_id=11, select_cols=["score"])
 
+    def test_envelope_extracts_benchmark_rows(self, fake_client):
+        rows = [{"id": 1, "machine_id": 11, "value": 12.5}]
+        fake_client({
+            "success": True,
+            "benchmarks": rows,
+            "benchmarks_found": 1,
+            "next_token": "next-page",
+        })
+        assert search_benchmarks(machine_id=11) == rows
+
+    @pytest.mark.parametrize(
+        ("response", "error_type"),
+        [
+            ([], TypeError),
+            ({"success": False, "benchmarks": []}, ValueError),
+            ({"success": True}, TypeError),
+            ({"success": True, "benchmarks": {}}, TypeError),
+        ],
+        ids=[
+            "obsolete-top-level-list",
+            "unsuccessful-envelope",
+            "missing-benchmarks",
+            "non-list-benchmarks",
+        ],
+    )
+    def test_malformed_envelope_crashes(self, fake_client, response, error_type):
+        fake_client(response)
+        with pytest.raises(
+            error_type,
+            match="SearchBenchmarks expected a successful /api/v0/benchmarks/ response",
+        ):
+            search_benchmarks(machine_id=11)
+
     def test_limit_is_applied_here(self, fake_client):
         """The server ignores limit, so cutting the list is this side's job."""
-        fake_client([{"id": n} for n in range(50)])
-        assert len(search_benchmarks(machine_id=11, limit=5)) == 5
+        rows = [{"id": n} for n in range(50)]
+        fake_client({
+            "success": True,
+            "benchmarks": rows,
+            "benchmarks_found": 50,
+            "next_token": "next-page",
+        })
+        assert search_benchmarks(machine_id=11, limit=5) == rows[:5]
 
     def test_limit_never_reaches_the_api(self, fake_client):
         """Sending it would only suggest the endpoint honors it."""
-        client = fake_client([])
+        client = fake_client({"success": True, "benchmarks": []})
         search_benchmarks(machine_id=11, limit=5)
         assert "limit" not in client.calls[0][2]["params"]
 
