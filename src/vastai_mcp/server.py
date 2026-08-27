@@ -4,16 +4,97 @@ import string
 import types
 import typing
 from collections.abc import Callable
+from functools import wraps
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from pydantic.fields import FieldInfo
 
 from . import tools as _tools_module
+from .client import APIError
 from .registry import ROOT
 
 mcp = MCPServer("vastai")
+
+_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.IGNORECASE)
+_RELATIVE_QUERY_RE = re.compile(r"/[^\s?,'\"<>]*\?[^ \t\r\n,'\"<>]*")
+_SECRET_VALUE_RE = re.compile(
+    r"""(?ix)
+    (["']?(?:authorization|token|api[_-]?key|secret|password|credential|dsn)
+    ["']?\s*[:=]\s*)
+    (?:["'][^"']*["']|\[[^\]]*\]|\{[^}]*\}|[^,\s}]+)
+    """
+)
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;]+"
+)
+
+
+def _redact_error_text(value: object) -> str:
+    """Remove credentials and query values from an error string."""
+    text = str(value)
+
+    def _redact_url(match: re.Match[str]) -> str:
+        try:
+            parts = urlsplit(match.group())
+            host = parts.hostname
+            if host is None:
+                return "<redacted-url>"
+            if ":" in host:
+                host = f"[{host}]"
+            try:
+                port = parts.port
+            except ValueError:
+                # no-report: an out-of-range port is scrub input, dropping it is the redaction
+                port = None
+            netloc = f"{host}:{port}" if port is not None else host
+            return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        except ValueError:
+            # no-report: an unparsable URL is scrub input, reporting it re-emits the secret
+            return "<redacted-url>"
+
+    text = _URL_RE.sub(_redact_url, text)
+    text = _RELATIVE_QUERY_RE.sub(lambda match: match.group().split("?", 1)[0], text)
+    text = _AUTHORIZATION_RE.sub(r"\1<redacted>", text)
+    return _SECRET_VALUE_RE.sub(r"\1<redacted>", text)
+
+
+def _error_result(exc: ValueError | APIError | httpx.RequestError) -> dict[str, str]:
+    if isinstance(exc, httpx.RequestError):
+        try:
+            request = exc.request
+        except RuntimeError:
+            # no-report: httpx raises when a RequestError has no request, absence is normal
+            request = None
+        method = request.method if request is not None else "REQUEST"
+        path = request.url.path if request is not None else "<unknown path>"
+        cause = _redact_error_text(exc) or "request failed"
+        return {
+            "error": (
+                f"Vast.ai transport failure: {method} {path}: "
+                f"{type(exc).__name__}: {cause}"
+            )
+        }
+    return {"error": _redact_error_text(exc)}
+
+
+def _safe_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Convert expected failures for every registered public operation."""
+    @wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except (ValueError, APIError) as exc:
+            # no-report: tool error boundary, bad input and API refusals are the answer
+            return _error_result(exc)
+        except httpx.RequestError as exc:
+            # no-report: tool error boundary, remote transport failure is the answer
+            return _error_result(exc)
+
+    return wrapped
 
 # -- State (populated by _register_tools) --------------------
 
@@ -213,7 +294,7 @@ def _register_tools() -> None:
         fn._params_model = _build_params_model(fn)
         group = fn._mcp_group
         if group is ROOT:
-            mcp.tool()(fn)
+            mcp.tool()(_safe_tool(fn))
         else:
             if group.name not in groups:
                 groups[group.name] = (group, {})
@@ -237,7 +318,7 @@ def _register_tools() -> None:
             tool_fn.__doc__ = gdoc
             return tool_fn
 
-        mcp.tool()(_make_tool(group_name, doc))
+        mcp.tool()(_safe_tool(_make_tool(group_name, doc)))
 
 
 _register_tools()

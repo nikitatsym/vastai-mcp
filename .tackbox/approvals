@@ -1,1 +1,6 @@
 tests/test_integration.py#_Rental.destroy: no-report: vast.ai reaps a dud under us, and the listing proves it really went
+src/vastai_mcp/server.py#_error_result: no-report: httpx raises when a RequestError has no request, absence is normal
+src/vastai_mcp/server.py#_redact_error_text._redact_url: no-report: an out-of-range port is scrub input, dropping it is the redaction
+src/vastai_mcp/server.py#_redact_error_text._redact_url: no-report: an unparsable URL is scrub input, reporting it re-emits the secret
+src/vastai_mcp/server.py#_safe_tool.wrapped: no-report: tool error boundary, bad input and API refusals are the answer
+src/vastai_mcp/server.py#_safe_tool.wrapped: no-report: tool error boundary, remote transport failure is the answer

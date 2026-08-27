@@ -433,7 +433,8 @@ vastai_delete = Group(
 def vastai_version() -> Any:
     """Get the Vast.ai MCP server version and service status.
 
-    An unreachable API surfaces as APIError, not as a status field."""
+    An unreachable API is returned at the registered tool boundary as a
+    contextual error result."""
     _get_client().get("/api/v0/users/current/")
     return {"mcp": version("vastai-mcp"), "service": {"status": "ok"}}
 
