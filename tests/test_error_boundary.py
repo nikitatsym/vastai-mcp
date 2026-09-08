@@ -1,18 +1,42 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 import httpx
 import pytest
+from mcp.types import TextContent
 
 from vastai_mcp import server, tools
 from vastai_mcp.client import APIError
 
 
 def _registered(name: str):
-    return server.mcp._tool_manager._tools[name].fn
+    fn = server.mcp._tool_manager._tools[name].fn
+
+    def call(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        return json.loads(result.text) if isinstance(result, TextContent) else result
+
+    return call
 
 
 def _raise(exc: Exception):
     raise exc
+
+
+def test_registered_tools_return_compact_json_without_structured_content():
+    for tool in server.mcp._tool_manager.list_tools():
+        assert tool.fn_metadata.output_schema is None
+
+    result = asyncio.run(server.mcp.call_tool("vastai_read", {"operation": "schema"}))
+
+    assert result.structured_content is None
+    assert len(result.content) == 1
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    assert "\n" not in content.text
+    assert json.loads(content.text) == server._build_schema("vastai_read", None)
 
 
 def test_registered_root_returns_contextual_api_error(monkeypatch):

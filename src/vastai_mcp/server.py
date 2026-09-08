@@ -9,7 +9,9 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from mcp.server.mcpserver import MCPServer
+import pydantic_core
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.types import ContentBlock, TextContent
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 from pydantic.fields import FieldInfo
 
@@ -95,6 +97,33 @@ def _safe_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
             return _error_result(exc)
 
     return wrapped
+
+
+def _compact(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize a data result as one-line JSON.
+
+    The SDK pretty-prints non-string results (`indent=2`), which costs the
+    caller ~20% more tokens for nothing; a ready TextContent passes through
+    untouched. Strings, content blocks and images keep the SDK path. Mirrors
+    fn's sync/async flavor so a sync tool stays on the SDK worker thread.
+    """
+    def to_content(result: Any) -> Any:
+        if result is None or isinstance(result, str | ContentBlock | Image):
+            return result
+        return TextContent(
+            type="text", text=pydantic_core.to_json(result, fallback=str).decode()
+        )
+
+    if inspect.iscoroutinefunction(fn):
+        @wraps(fn)
+        async def async_compact(*args: Any, **kwargs: Any) -> Any:
+            return to_content(await fn(*args, **kwargs))
+        return async_compact
+
+    @wraps(fn)
+    def sync_compact(*args: Any, **kwargs: Any) -> Any:
+        return to_content(fn(*args, **kwargs))
+    return sync_compact
 
 # -- State (populated by _register_tools) --------------------
 
@@ -294,7 +323,7 @@ def _register_tools() -> None:
         fn._params_model = _build_params_model(fn)
         group = fn._mcp_group
         if group is ROOT:
-            mcp.tool()(_safe_tool(fn))
+            mcp.tool(structured_output=False)(_compact(_safe_tool(fn)))
         else:
             if group.name not in groups:
                 groups[group.name] = (group, {})
@@ -318,7 +347,7 @@ def _register_tools() -> None:
             tool_fn.__doc__ = gdoc
             return tool_fn
 
-        mcp.tool()(_safe_tool(_make_tool(group_name, doc)))
+        mcp.tool(structured_output=False)(_compact(_safe_tool(_make_tool(group_name, doc))))
 
 
 _register_tools()
