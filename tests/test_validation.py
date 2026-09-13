@@ -12,6 +12,7 @@ import pytest
 
 from vastai_mcp import tools
 from vastai_mcp.client import APIError, VastClient
+from vastai_mcp.config import Settings
 from vastai_mcp.server import (
     _VIRTUAL_OPERATIONS,
     _all_grouped,
@@ -669,6 +670,10 @@ class _FakeClient:
         self.calls.append(("PUT", path, kwargs))
         return self.response
 
+    def check(self):
+        self.get("/api/v0/users/current/")
+        return {"status": "ok"}
+
 
 @pytest.fixture
 def fake_client(monkeypatch):
@@ -1117,8 +1122,8 @@ class TestVastaiVersion:
     def test_service_error_propagates(self, monkeypatch):
         """A dead API must surface as APIError, not as {"status": "error"}."""
         class _DeadClient:
-            def get(self, path, **kwargs):
-                raise APIError(500, "GET", path, {"msg": "down"})
+            def check(self):
+                raise APIError(500, "GET", "/api/v0/users/current/", {"msg": "down"})
 
         monkeypatch.setattr(tools, "_client", _DeadClient())
         with pytest.raises(APIError):
@@ -1127,6 +1132,14 @@ class TestVastaiVersion:
     def test_service_ok(self, fake_client):
         fake_client({"id": 1})
         assert vastai_version()["service"] == {"status": "ok"}
+
+
+class TestClientCheck:
+    def test_missing_key_names_the_setting(self):
+        """The startup probe must say which variable is empty, not 401 later."""
+        client = VastClient(settings=Settings(vastai_api_key=""))
+        with pytest.raises(ValueError, match="VASTAI_API_KEY"):
+            client.check()
 
 
 class TestClientHandle:

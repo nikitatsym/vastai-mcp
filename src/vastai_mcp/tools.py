@@ -441,8 +441,7 @@ def vastai_version() -> Any:
 
     An unreachable API is returned at the registered tool boundary as a
     contextual error result."""
-    _get_client().get("/api/v0/users/current/")
-    return {"mcp": version("vastai-mcp"), "service": {"status": "ok"}}
+    return {"mcp": version("vastai-mcp"), "service": _get_client().check()}
 
 
 # -- vastai_read --------------------

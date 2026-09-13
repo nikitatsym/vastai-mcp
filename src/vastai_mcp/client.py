@@ -69,3 +69,11 @@ class VastClient:
         """GET from run.vast.ai (serverless runtime API)."""
         return self._handle(self._run_http.get(path, **kwargs))
 
+    def check(self) -> dict[str, str]:
+        """The one authenticated read the server makes at startup and the version tool
+        reports. The account payload itself is private, so only reachability is kept."""
+        if not self._base or not self._key:
+            raise ValueError("VASTAI_URL and VASTAI_API_KEY must be set")
+        self.get("/api/v0/users/current/")
+        return {"status": "ok"}
+

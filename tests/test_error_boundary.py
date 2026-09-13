@@ -41,7 +41,7 @@ def test_registered_tools_return_compact_json_without_structured_content():
 
 def test_registered_root_returns_contextual_api_error(monkeypatch):
     class BrokenClient:
-        def get(self, _path: str):
+        def check(self):
             raise APIError(503, "GET", "/api/v0/users/current/?api_key=secret", {"detail": "unavailable"})
 
     monkeypatch.setattr(tools, "_get_client", lambda: BrokenClient())
@@ -82,8 +82,8 @@ def test_registration_keeps_tools_sync():
 
 def test_registered_root_preserves_success_shape(monkeypatch):
     class OkClient:
-        def get(self, _path: str):
-            return {"id": 1}
+        def check(self):
+            return {"status": "ok"}
 
     monkeypatch.setattr(tools, "_get_client", lambda: OkClient())
 
