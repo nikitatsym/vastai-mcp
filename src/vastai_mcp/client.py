@@ -2,7 +2,7 @@ from typing import Any
 
 import httpx
 
-from .config import get_settings
+from .config import Settings, get_settings
 
 
 class APIError(Exception):
@@ -19,8 +19,10 @@ class VastClient:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
+        *,
+        settings: Settings | None = None,
     ):
-        s = get_settings()
+        s = settings or get_settings()
         self._base = (base_url or s.vastai_url).rstrip("/")
         self._run_base = s.vastai_run_url.rstrip("/")
         self._key = api_key or s.vastai_api_key

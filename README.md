@@ -22,6 +22,9 @@ MCP server for Vast.ai GPU marketplace.
 
 `vastai-mcp --http` serves streamable HTTP at `http://127.0.0.1:8000/mcp` (`--host`, `--port`) instead of stdio, same environment variables. No authentication: put a gateway in front.
 
+The package can also be imported: `mcp`, `Settings`, the client class, and `client_var`
+(a `ContextVar` the host sets per request) let one process serve several instances.
+
 ## Groups
 
 | Tool | Description |

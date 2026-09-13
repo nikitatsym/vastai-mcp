@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import Annotated, Any, Literal
@@ -11,13 +12,18 @@ from pydantic import Field
 from .client import VastClient
 from .registry import ROOT, Group, _op
 
-# -- Client singleton --------------------
+# -- Client --------------------
 
+# A host serving several vast.ai accounts from one process binds a client per request;
+# the module singleton is the path for a process that serves one account.
+client_var: ContextVar[VastClient | None] = ContextVar("vastai_client", default=None)
 _client: VastClient | None = None
 
 
 def _get_client() -> VastClient:
     global _client
+    if (bound := client_var.get()) is not None:
+        return bound
     if _client is None:
         _client = VastClient()
     return _client

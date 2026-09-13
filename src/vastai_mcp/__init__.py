@@ -2,7 +2,12 @@ import argparse
 
 from mcp.server.transport_security import TransportSecuritySettings
 
+from .client import VastClient
+from .config import Settings
 from .server import mcp
+from .tools import client_var
+
+__all__ = ["Settings", "VastClient", "client_var", "main", "mcp"]
 
 
 def main() -> None:
