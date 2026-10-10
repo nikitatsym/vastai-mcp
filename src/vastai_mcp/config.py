@@ -15,9 +15,3 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
-
-
-def _reset_settings() -> None:
-    """Force re-read from env. Used by tests."""
-    global _settings
-    _settings = None

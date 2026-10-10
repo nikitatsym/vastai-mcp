@@ -15,7 +15,7 @@ class Group:
 ROOT = Group("root", "")
 
 
-def _op(group: Group) -> Callable[[Any], Any]:
+def op(group: Group) -> Callable[[Any], Any]:
     """Mark a function as an MCP tool in the given group."""
 
     def decorator(fn: Any) -> Any:

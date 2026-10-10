@@ -10,7 +10,7 @@ import httpx
 from pydantic import Field
 
 from .client import VastClient
-from .registry import ROOT, Group, _op
+from .registry import ROOT, Group, op
 
 # -- Client --------------------
 
@@ -20,7 +20,8 @@ client_var: ContextVar[VastClient | None] = ContextVar("vastai_client", default=
 _client: VastClient | None = None
 
 
-def _get_client() -> VastClient:
+def get_client() -> VastClient:
+    """Return the request-bound client or the process-wide default client."""
     global _client
     if (bound := client_var.get()) is not None:
         return bound
@@ -175,7 +176,7 @@ _GPU_NAMES: list[str] | None = None
 def _gpu_names() -> list[str]:
     global _GPU_NAMES
     if _GPU_NAMES is None:
-        result = _get_client().get("/api/v0/gpu_names/unique/")
+        result = get_client().get("/api/v0/gpu_names/unique/")
         _GPU_NAMES = result["gpu_names"]
     return _GPU_NAMES
 
@@ -435,42 +436,42 @@ vastai_delete = Group(
 
 # -- ROOT --------------------
 
-@_op(ROOT)
+@op(ROOT)
 def vastai_version() -> Any:
     """Get the Vast.ai MCP server version and service status.
 
     An unreachable API is returned at the registered tool boundary as a
     contextual error result."""
-    return {"mcp": version("vastai-mcp"), "service": _get_client().check()}
+    return {"mcp": version("vastai-mcp"), "service": get_client().check()}
 
 
 # -- vastai_read --------------------
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_user() -> Any:
     """Get current user info."""
-    return _get_client().get("/api/v0/users/current/")
+    return get_client().get("/api/v0/users/current/")
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_api_keys() -> Any:
     """List API keys."""
-    return _get_client().get("/api/v0/auth/apikeys/")
+    return get_client().get("/api/v0/auth/apikeys/")
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_ssh_keys() -> Any:
     """List SSH keys."""
-    return _get_client().get("/api/v0/ssh/")
+    return get_client().get("/api/v0/ssh/")
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_secrets() -> Any:
     """List secrets."""
-    return _get_client().get("/api/v0/secrets/")
+    return get_client().get("/api/v0/secrets/")
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def search_offers(
     limit: int = 20,
     gpu_name: Annotated[str | None, Field(description=(
@@ -504,19 +505,19 @@ def search_offers(
     order_val = _parse_order(order)
     if order_val:
         q["order"] = order_val
-    result = _get_client().post("/api/v0/bundles/", json=q)
+    result = get_client().post("/api/v0/bundles/", json=q)
     if isinstance(result, dict) and "offers" in result:
         result["offers"] = _slim_list(result["offers"], _SLIM_OFFER_FIELDS)
     return _ok(result)
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_gpu_names() -> Any:
     """List GPU names accepted by SearchOffers."""
     return _ok({"gpu_names": _gpu_names()})
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def search_templates(
     name: Annotated[str | None, Field(description="Substring match.")] = None,
     image: Annotated[str | None, Field(description="Substring match.")] = None,
@@ -538,13 +539,13 @@ def search_templates(
     order_by = _parse_order_by(order)
     if order_by:
         params["order_by"] = json.dumps(order_by)
-    result = _get_client().get("/api/v0/template/", params=params)
+    result = get_client().get("/api/v0/template/", params=params)
     if isinstance(result, dict) and "templates" in result:
         result["templates"] = _slim_list(result["templates"], _SLIM_TEMPLATE_FIELDS)
     return _ok(result)
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def search_benchmarks(
     machine_id: int | None = None,
     contract_id: int | None = None,
@@ -585,7 +586,7 @@ def search_benchmarks(
                 f"select_cols={unknown} are not benchmark columns. "
                 f"Valid: {', '.join(sorted(_BENCHMARK_COLUMNS))}"
             )
-    response = _get_client().get("/api/v0/benchmarks/", params={
+    response = get_client().get("/api/v0/benchmarks/", params={
         "select_cols": json.dumps(list(select_cols) if select_cols else ["*"]),
         "select_filters": json.dumps(filters),
     })
@@ -608,28 +609,28 @@ def search_benchmarks(
     return benchmarks[:int(limit)]
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_instances() -> Any:
     """List all rented instances (slimmed)."""
-    result = _get_client().get("/api/v0/instances/")
+    result = get_client().get("/api/v0/instances/")
     if isinstance(result, dict) and "instances" in result:
         result["instances"] = _slim_list(result["instances"], _SLIM_INSTANCE_FIELDS)
     return _ok(result)
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_instance(id: int) -> Any:
     """Get full instance details by ID."""
-    return _ok(_get_client().get(f"/api/v0/instances/{id}/"))
+    return _ok(get_client().get(f"/api/v0/instances/{id}/"))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_instance_ssh_keys(instance_id: int) -> Any:
     """Get SSH keys attached to an instance."""
-    return _ok(_get_client().get(f"/api/v0/instances/{instance_id}/ssh/"))
+    return _ok(get_client().get(f"/api/v0/instances/{instance_id}/ssh/"))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_logs(
     id: int,
     tail: Annotated[int, Field(description="Number of lines, 0 for all.")] = 500,
@@ -646,7 +647,7 @@ def show_logs(
     body: dict[str, Any] = {"tail": str(tail)}
     if daemon_logs:
         body["daemon_logs"] = True
-    result = _get_client().put(f"/api/v0/instances/request_logs/{id}/", json=body)
+    result = get_client().put(f"/api/v0/instances/request_logs/{id}/", json=body)
     content = _fetch_result(result)
     if filter and isinstance(content, str):
         pattern = re.compile(filter)
@@ -655,13 +656,13 @@ def show_logs(
     return _ok(content)
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_deposit(id: int) -> Any:
     """Get instance deposit/balance info."""
-    return _ok(_get_client().get(f"/api/v0/instances/balance/{id}/"))
+    return _ok(get_client().get(f"/api/v0/instances/balance/{id}/"))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def search_invoices(
     start_date: Annotated[str | None, Field(
         description=f"{_DATE_FORMAT} Open-ended when omitted.",
@@ -686,12 +687,12 @@ def search_invoices(
         filters["is_credit"] = {"eq": is_credit}
     if service is not None:
         filters["service"] = {"eq": service}
-    return _ok(_get_client().get("/api/v0/invoices/", params={
+    return _ok(get_client().get("/api/v0/invoices/", params={
         "select_filters": json.dumps(filters), "limit": int(limit),
     }))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_invoices_v1(
     start_date: Annotated[str | None, Field(
         description=f"{_DATE_FORMAT} Defaults to 30 days before end_date.",
@@ -713,10 +714,10 @@ def show_invoices_v1(
     }
     if next_token is not None:
         params["after_token"] = next_token
-    return _ok(_get_client().get("/api/v1/invoices/", params=params))
+    return _ok(get_client().get("/api/v1/invoices/", params=params))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def show_charges(
     start_date: Annotated[str | None, Field(
         description=f"{_DATE_FORMAT} Defaults to 30 days before end_date.",
@@ -744,46 +745,46 @@ def show_charges(
     }
     if next_token is not None:
         params["after_token"] = next_token
-    return _ok(_get_client().get("/api/v0/charges/", params=params))
+    return _ok(get_client().get("/api/v0/charges/", params=params))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_volumes() -> Any:
     """List volumes."""
-    return _ok(_get_client().get("/api/v0/volumes/"))
+    return _ok(get_client().get("/api/v0/volumes/"))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def search_volumes(q: str | None = None, limit: int = 20) -> Any:
     """Search volumes."""
     body: dict[str, Any] = {"limit": limit}
     if q is not None:
         body["q"] = q
-    return _ok(_get_client().post("/api/v0/volumes/search/", json=body))
+    return _ok(get_client().post("/api/v0/volumes/search/", json=body))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def search_network_volumes(q: str | None = None) -> Any:
     """Search network volumes."""
     body: dict[str, Any] = {}
     if q is not None:
         body["q"] = q
-    return _ok(_get_client().post("/api/v0/network_volumes/search/", json=body))
+    return _ok(get_client().post("/api/v0/network_volumes/search/", json=body))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_endpoints() -> Any:
     """List serverless endpoints."""
-    return _ok(_get_client().get("/api/v0/endptjobs/"))
+    return _ok(get_client().get("/api/v0/endptjobs/"))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def list_workergroups() -> Any:
     """List worker groups."""
-    return _ok(_get_client().get("/api/v0/workergroups/"))
+    return _ok(get_client().get("/api/v0/workergroups/"))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def get_endpoint_logs(
     endpoint: str,
     tail: Annotated[int, Field(
@@ -791,18 +792,18 @@ def get_endpoint_logs(
     )] = 500,
 ) -> Any:
     """Get endpoint logs."""
-    return _ok(_get_client().run_post(
+    return _ok(get_client().run_post(
         "/get_endpoint_logs/", json={"endpoint": endpoint, "tail": tail},
     ))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def get_endpoint_workers(id: int) -> Any:
     """Get endpoint workers."""
-    return _ok(_get_client().run_post("/get_endpoint_workers/", json={"id": id}))
+    return _ok(get_client().run_post("/get_endpoint_workers/", json={"id": id}))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def get_workergroup_logs(
     id: int,
     tail: Annotated[int, Field(
@@ -810,53 +811,53 @@ def get_workergroup_logs(
     )] = 500,
 ) -> Any:
     """Get worker group logs."""
-    return _ok(_get_client().run_post(
+    return _ok(get_client().run_post(
         "/get_workergroup_logs/", json={"id": id, "tail": tail},
     ))
 
 
-@_op(vastai_read)
+@op(vastai_read)
 def get_workergroup_workers(id: int) -> Any:
     """Get worker group workers."""
-    return _ok(_get_client().run_post("/get_workergroup_workers/", json={"id": id}))
+    return _ok(get_client().run_post("/get_workergroup_workers/", json={"id": id}))
 
 
 # -- vastai_write --------------------
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_api_key(name: str, permissions: str | None = None) -> Any:
     """Create an API key."""
     body: dict[str, str] = {"name": name}
     if permissions is not None:
         body["permissions"] = permissions
-    return _ok(_get_client().post("/api/v0/auth/apikeys/", json=body))
+    return _ok(get_client().post("/api/v0/auth/apikeys/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_ssh_key(ssh_key: str) -> Any:
     """Add an SSH public key."""
-    return _ok(_get_client().post("/api/v0/ssh/", json={"ssh_key": ssh_key}))
+    return _ok(get_client().post("/api/v0/ssh/", json={"ssh_key": ssh_key}))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def update_ssh_key(id: int, ssh_key: str) -> Any:
     """Update an SSH key."""
-    return _ok(_get_client().put(f"/api/v0/ssh/{id}/", json={"ssh_key": ssh_key}))
+    return _ok(get_client().put(f"/api/v0/ssh/{id}/", json={"ssh_key": ssh_key}))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_secret(key: str, value: str) -> Any:
     """Create a secret."""
-    return _ok(_get_client().post("/api/v0/secrets/", json={"key": key, "value": value}))
+    return _ok(get_client().post("/api/v0/secrets/", json={"key": key, "value": value}))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def update_secret(key: str, value: str) -> Any:
     """Update a secret."""
-    return _ok(_get_client().put("/api/v0/secrets/", json={"key": key, "value": value}))
+    return _ok(get_client().put("/api/v0/secrets/", json={"key": key, "value": value}))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_instance(
     id: Annotated[int, Field(description="Offer ID from SearchOffers.")],
     image: str,
@@ -897,10 +898,10 @@ def create_instance(
         body["python_utf8"] = python_utf8
     if lang_utf8 is not None:
         body["lang_utf8"] = lang_utf8
-    return _ok(_get_client().put(f"/api/v0/asks/{id}/", json=body))
+    return _ok(get_client().put(f"/api/v0/asks/{id}/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def manage_instance(id: int, state: Literal["running", "stopped"] | None = None, label: str | None = None) -> Any:
     """Start, stop, or relabel an instance."""
     body: dict[str, str | None] = {}
@@ -908,35 +909,35 @@ def manage_instance(id: int, state: Literal["running", "stopped"] | None = None,
         body["state"] = state
     if label is not None:
         body["label"] = label
-    return _ok(_get_client().put(f"/api/v0/instances/{id}/", json=body))
+    return _ok(get_client().put(f"/api/v0/instances/{id}/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def change_bid(id: int, price: float) -> Any:
     """Change bid price for an interruptible instance."""
-    return _ok(_get_client().put(
+    return _ok(get_client().put(
         f"/api/v0/instances/bid_price/{id}/",
         json={"client_id": "me", "price": price},
     ))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def prepay_instance(id: int, amount: float) -> Any:
     """Prepay balance for an instance."""
-    return _ok(_get_client().put(
+    return _ok(get_client().put(
         f"/api/v0/instances/prepay/{id}/", json={"amount": amount},
     ))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def attach_ssh_key(id: int, ssh_key: str) -> Any:
     """Attach an SSH key to an instance."""
-    return _ok(_get_client().post(
+    return _ok(get_client().post(
         f"/api/v0/instances/{id}/ssh/", json={"ssh_key": ssh_key},
     ))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_template(
     name: str,
     image: str,
@@ -978,10 +979,10 @@ def create_template(
         body["private"] = private
     if args_str is not None:
         body["args_str"] = args_str
-    return _ok(_get_client().post("/api/v0/template/", json=body))
+    return _ok(get_client().post("/api/v0/template/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def edit_template(
     hash_id: str,
     name: str | None = None,
@@ -1004,25 +1005,25 @@ def edit_template(
         body["desc"] = desc
     if recommended_disk_space is not None:
         body["recommended_disk_space"] = recommended_disk_space
-    return _ok(_get_client().put("/api/v0/template/", json=body))
+    return _ok(get_client().put("/api/v0/template/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def rent_volume(id: int, size: float) -> Any:
     """Rent a volume."""
-    return _ok(_get_client().put("/api/v0/volumes/", json={"id": id, "size": size}))
+    return _ok(get_client().put("/api/v0/volumes/", json={"id": id, "size": size}))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_network_volume(id: int, size: float, name: str | None = None) -> Any:
     """Create a network volume."""
     body: dict[str, Any] = {"id": id, "size": size}
     if name is not None:
         body["name"] = name
-    return _ok(_get_client().put("/api/v0/network_volume/", json=body))
+    return _ok(get_client().put("/api/v0/network_volume/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_endpoint(
     endpoint_name: str,
     min_load: float | None = None,
@@ -1036,10 +1037,10 @@ def create_endpoint(
         endpoint_name=endpoint_name, min_load=min_load, target_util=target_util,
         cold_mult=cold_mult, cold_workers=cold_workers, max_workers=max_workers,
     )
-    return _ok(_get_client().post("/api/v0/endptjobs/", json=body))
+    return _ok(get_client().post("/api/v0/endptjobs/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def update_endpoint(
     id: int,
     endpoint_name: str | None = None,
@@ -1054,10 +1055,10 @@ def update_endpoint(
         endpoint_name=endpoint_name, min_load=min_load, target_util=target_util,
         cold_mult=cold_mult, cold_workers=cold_workers, max_workers=max_workers,
     )
-    return _ok(_get_client().put(f"/api/v0/endptjobs/{id}/", json=body))
+    return _ok(get_client().put(f"/api/v0/endptjobs/{id}/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def create_workergroup(
     endpoint_name: str,
     endpoint_id: int | None = None,
@@ -1089,10 +1090,10 @@ def create_workergroup(
     body["test_workers"] = test_workers if test_workers is not None else 3
     if gpu_ram_gb is not None:
         body["gpu_ram"] = gpu_ram_gb
-    return _ok(_get_client().post("/api/v0/workergroups/", json=body))
+    return _ok(get_client().post("/api/v0/workergroups/", json=body))
 
 
-@_op(vastai_write)
+@op(vastai_write)
 def update_workergroup(
     id: int,
     template_hash: str | None = None,
@@ -1118,24 +1119,24 @@ def update_workergroup(
         test_workers=test_workers, gpu_ram=gpu_ram_gb,
         endpoint_name=endpoint_name, endpoint_id=endpoint_id,
     )
-    return _ok(_get_client().put(f"/api/v0/workergroups/{id}/", json=body))
+    return _ok(get_client().put(f"/api/v0/workergroups/{id}/", json=body))
 
 
 # -- vastai_execute --------------------
 
-@_op(vastai_execute)
+@op(vastai_execute)
 def reboot_instance(id: int) -> Any:
     """Reboot an instance (docker stop/start, keeps GPU)."""
-    return _ok(_get_client().put(f"/api/v0/instances/reboot/{id}/", json={}))
+    return _ok(get_client().put(f"/api/v0/instances/reboot/{id}/", json={}))
 
 
-@_op(vastai_execute)
+@op(vastai_execute)
 def recycle_instance(id: int) -> Any:
     """Recycle an instance (destroy+recreate, re-pulls image)."""
-    return _ok(_get_client().put(f"/api/v0/instances/recycle/{id}/", json={}))
+    return _ok(get_client().put(f"/api/v0/instances/recycle/{id}/", json={}))
 
 
-@_op(vastai_execute)
+@op(vastai_execute)
 def execute_command(
     id: int,
     command: Annotated[str, Field(description=(
@@ -1146,22 +1147,22 @@ def execute_command(
 
     This is vast.ai's disk API, not a remote shell: on a running instance it answers 400 and
     points at ssh. Stop the instance with ManageInstance(state='stopped') first."""
-    result = _get_client().put(
+    result = get_client().put(
         f"/api/v0/instances/command/{id}/", json={"command": command},
     )
     return _ok(_fetch_result(result))
 
 
-@_op(vastai_execute)
+@op(vastai_execute)
 def copy_data(src_id: int, dst_id: int, src_path: str, dst_path: str) -> Any:
     """Copy data between instances."""
-    return _ok(_get_client().put("/api/v0/commands/copy_direct/", json={
+    return _ok(get_client().put("/api/v0/commands/copy_direct/", json={
         "src_id": src_id, "dst_id": dst_id,
         "src_path": src_path, "dst_path": dst_path,
     }))
 
 
-@_op(vastai_execute)
+@op(vastai_execute)
 def cloud_copy(
     instance_id: int,
     src: str,
@@ -1175,10 +1176,10 @@ def cloud_copy(
         body["selected"] = selected
     if transfer is not None:
         body["transfer"] = transfer
-    return _ok(_get_client().post("/api/v0/commands/rclone/", json=body))
+    return _ok(get_client().post("/api/v0/commands/rclone/", json=body))
 
 
-@_op(vastai_execute)
+@op(vastai_execute)
 def route_request(
     endpoint: Annotated[str, Field(description="Endpoint name.")],
     cost: float | None = None,
@@ -1189,84 +1190,84 @@ def route_request(
     body: dict[str, Any] = {"endpoint": endpoint}
     if cost is not None:
         body["cost"] = cost
-    return _ok(_get_client().run_post("/route/", json=body))
+    return _ok(get_client().run_post("/route/", json=body))
 
 
 # -- vastai_delete --------------------
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def destroy_instance(id: int) -> Any:
     """Destroy an instance. Irreversible."""
-    return _ok(_get_client().delete(f"/api/v0/instances/{id}/"))
+    return _ok(get_client().delete(f"/api/v0/instances/{id}/"))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_api_key(id: int) -> Any:
     """Delete an API key."""
-    return _ok(_get_client().delete(f"/api/v0/auth/apikeys/{id}/"))
+    return _ok(get_client().delete(f"/api/v0/auth/apikeys/{id}/"))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_ssh_key(id: int) -> Any:
     """Delete an SSH key."""
-    return _ok(_get_client().delete(f"/api/v0/ssh/{id}/"))
+    return _ok(get_client().delete(f"/api/v0/ssh/{id}/"))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def detach_ssh_key(id: int, ssh_key_id: int) -> Any:
     """Detach an SSH key from an instance."""
-    return _ok(_get_client().delete(f"/api/v0/instances/{id}/ssh/{ssh_key_id}/"))
+    return _ok(get_client().delete(f"/api/v0/instances/{id}/ssh/{ssh_key_id}/"))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_secret(key: str) -> Any:
     """Delete a secret by key name."""
-    return _ok(_get_client().delete("/api/v0/secrets/", json={"key": key}))
+    return _ok(get_client().delete("/api/v0/secrets/", json={"key": key}))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_template(template_id: int) -> Any:
     """Delete a template."""
-    return _ok(_get_client().delete(
+    return _ok(get_client().delete(
         "/api/v0/template/", json={"template_id": template_id},
     ))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_volume(id: int) -> Any:
     """Delete a volume."""
-    return _ok(_get_client().delete("/api/v0/volumes/", json={"id": id}))
+    return _ok(get_client().delete("/api/v0/volumes/", json={"id": id}))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def unlist_volume(id: int) -> Any:
     """Unlist a volume from marketplace."""
-    return _ok(_get_client().post("/api/v0/volumes/unlist/", json={"id": id}))
+    return _ok(get_client().post("/api/v0/volumes/unlist/", json={"id": id}))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_endpoint(id: int) -> Any:
     """Delete a serverless endpoint."""
-    return _ok(_get_client().delete(f"/api/v0/endptjobs/{id}/"))
+    return _ok(get_client().delete(f"/api/v0/endptjobs/{id}/"))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def delete_workergroup(id: int) -> Any:
     """Delete a worker group."""
-    return _ok(_get_client().delete(f"/api/v0/workergroups/{id}/"))
+    return _ok(get_client().delete(f"/api/v0/workergroups/{id}/"))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def cancel_copy(dst_id: int) -> Any:
     """Cancel a direct copy operation."""
-    return _ok(_get_client().delete(
+    return _ok(get_client().delete(
         "/api/v0/commands/copy_direct/", json={"dst_id": dst_id},
     ))
 
 
-@_op(vastai_delete)
+@op(vastai_delete)
 def cancel_sync(dst_id: int) -> Any:
     """Cancel a cloud sync (rclone) operation."""
-    return _ok(_get_client().delete(
+    return _ok(get_client().delete(
         "/api/v0/commands/rclone/", json={"dst_id": dst_id},
     ))

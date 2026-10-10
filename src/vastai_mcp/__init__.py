@@ -5,7 +5,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .client import VastClient
 from .config import Settings
 from .server import mcp
-from .tools import _get_client, client_var
+from .tools import client_var, get_client
 
 __all__ = ["Settings", "VastClient", "client_var", "main", "mcp"]
 
@@ -25,7 +25,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Fail here rather than on the first tool call: a bad key is a startup error.
-    _get_client().check()
+    get_client().check()
 
     if args.http:
         # Stateless: the gateway in front opens a session per call; nothing outlives a request.

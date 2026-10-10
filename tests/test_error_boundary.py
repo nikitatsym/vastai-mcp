@@ -44,7 +44,7 @@ def test_registered_root_returns_contextual_api_error(monkeypatch):
         def check(self):
             raise APIError(503, "GET", "/api/v0/users/current/?api_key=secret", {"detail": "unavailable"})
 
-    monkeypatch.setattr(tools, "_get_client", lambda: BrokenClient())
+    monkeypatch.setattr(tools, "get_client", lambda: BrokenClient())
 
     result = _registered("vastai_version")()
 
@@ -85,7 +85,7 @@ def test_registered_root_preserves_success_shape(monkeypatch):
         def check(self):
             return {"status": "ok"}
 
-    monkeypatch.setattr(tools, "_get_client", lambda: OkClient())
+    monkeypatch.setattr(tools, "get_client", lambda: OkClient())
 
     result = _registered("vastai_version")()
 

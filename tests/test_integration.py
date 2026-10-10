@@ -369,7 +369,7 @@ INVOICE_PAGE = 100
 
 def _invoices_query(**query: Any) -> Any:
     """Bypasses SearchInvoices to probe the endpoint contract its typed params rest on."""
-    return tools._get_client().get("/api/v0/invoices/", params=query)
+    return tools.get_client().get("/api/v0/invoices/", params=query)
 
 
 @pytest.fixture(scope="session")
